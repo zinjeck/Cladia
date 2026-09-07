@@ -80,7 +80,14 @@ public:
     [[nodiscard]] const std::vector<HydrothermalVent>& vents() const noexcept;
     [[nodiscard]] const std::vector<EnergyRay>& energyRays() const noexcept;
 
-    [[nodiscard]] std::vector<PrimitiveParticle>& mutableParticles() noexcept { return particles_; }
+    [[nodiscard]] std::vector<PrimitiveParticle>& mutableParticles()
+    {
+        // The simulation has a hard 420-particle budget. Reserving above that
+        // limit keeps particle references stable while helper systems append
+        // replenishment material during a frame.
+        if (particles_.capacity() < 512) particles_.reserve(512);
+        return particles_;
+    }
     [[nodiscard]] std::vector<EnergyRay>& mutableEnergyRays() noexcept { return rays_; }
     PrimitiveParticle& spawnPrimitive(PrimitiveKind kind, float x, float y, float vx = 0.0f, float vy = 0.0f)
     {
