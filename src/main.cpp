@@ -354,9 +354,12 @@ namespace
             switch(p.kind)
             {
             case PrimitiveKind::Lipid:
+            {
                 filledCircle(renderer,s.x,s.y,3.0f,p.inClosedLipidLoop?SDL_Color{126,224,244,255}:SDL_Color{105,201,232,255});
                 break;
+            }
             case PrimitiveKind::RnaTriplet:
+            {
                 hollowCircle(renderer,s.x,s.y,8.0f,p.stopTriplet?SDL_Color{245,99,111,255}:SDL_Color{218,73,84,255});
                 if(!p.stopTriplet)
                 {
@@ -369,16 +372,21 @@ namespace
                 SDL_RenderRect(renderer,&socket);
                 drawText(renderer,p.triplet,s.x-textWidth(p.triplet,8.0f)*0.5f,s.y-5.0f,8.0f,{255,202,204,255});
                 break;
+            }
             case PrimitiveKind::Peptide:
+            {
                 if(p.excited) filledCircle(renderer,s.x,s.y,7.0f,{255,197,78,55});
                 filledCircle(renderer,s.x,s.y,3.5f,{239,143,48,255});
                 break;
+            }
             case PrimitiveKind::Atp:
+            {
                 SDL_SetRenderDrawColor(renderer,248,224,79,255);
                 SDL_RenderLine(renderer,s.x-5.0f,s.y-5.0f,s.x+1.0f,s.y-1.0f);
                 SDL_RenderLine(renderer,s.x+1.0f,s.y-1.0f,s.x-2.0f,s.y+2.0f);
                 SDL_RenderLine(renderer,s.x-2.0f,s.y+2.0f,s.x+5.0f,s.y+6.0f);
                 break;
+            }
             }
         }
     }
