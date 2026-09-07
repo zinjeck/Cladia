@@ -9,6 +9,7 @@
 #include <iostream>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 
 namespace
 {
@@ -321,13 +322,15 @@ int main()
     Slider moistureSlider;
     Slider continentSlider;
 
-    GeneratedWorld preview = WorldGenerator::generate(renderer, 320, 180, seed, settings);
+    constexpr int previewWidth = 192;
+    constexpr int previewHeight = 108;
+    GeneratedWorld preview = WorldGenerator::generate(renderer, previewWidth, previewHeight, seed, settings);
     GeneratedWorld world;
 
     auto refreshPreview = [&]()
     {
         WorldGenerator::destroy(preview);
-        preview = WorldGenerator::generate(renderer, 320, 180, seed, settings);
+        preview = WorldGenerator::generate(renderer, previewWidth, previewHeight, seed, settings);
     };
 
     auto sliderFor = [&](SliderId id) -> Slider*
