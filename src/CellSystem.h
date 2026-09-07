@@ -1,6 +1,9 @@
 #pragma once
 
+#include "SpeciesRegistry.h"
+
 #include <cstdint>
+#include <string>
 #include <vector>
 
 enum class OrganismControlPolicy
@@ -11,9 +14,11 @@ enum class OrganismControlPolicy
 struct Cell
 {
     std::uint32_t id = 0;
+    SpeciesId speciesId = SpeciesRegistry::CladiaId;
     float x = 0.5f;
     float y = 0.5f;
     float radius = 0.018f;
+    std::string dna = "UNSEQUENCED";
     OrganismControlPolicy controlPolicy = OrganismControlPolicy::GenesAndEnvironmentOnly;
 
     // Intentionally empty for now. Real biological components come later.
@@ -24,7 +29,7 @@ class CellSystem
 {
 public:
     void clear() noexcept;
-    std::uint32_t spawnCell(float x, float y);
+    std::uint32_t spawnCell(SpeciesId speciesId, float x, float y);
 
     // Future movement belongs here and must be derived from genes, internal
     // state, and sensed environment. No player movement target API exists.
