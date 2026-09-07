@@ -148,7 +148,7 @@ GeneratedWorld WorldGenerator::generate(SDL_Renderer* renderer, int width, int h
         }
     }
 
-    world.texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_STATIC, width, height);
+    world.texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STATIC, width, height);
     if (world.texture != nullptr)
     {
         SDL_SetTextureScaleMode(world.texture, SDL_SCALEMODE_LINEAR);
