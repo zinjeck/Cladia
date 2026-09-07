@@ -3,11 +3,13 @@
 
 #include "AbiogenesisSystem.h"
 #include "AquaticWorld.h"
+#include "ProtocellLifecycle.h"
 #include "SimulationClock.h"
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <iomanip>
 #include <numbers>
 #include <sstream>
@@ -309,8 +311,10 @@ namespace
                 {
                     const SDL_FPoint a=worldToScreen(p.body.x,p.body.y,camera,width,height);
                     const SDL_FPoint b=worldToScreen(q->body.x,q->body.y,camera,width,height);
-                    SDL_SetRenderDrawColor(renderer,150,56,65,210);
+                    SDL_SetRenderDrawColor(renderer,176,64,73,230);
                     SDL_RenderLine(renderer,a.x,a.y,b.x,b.y);
+                    SDL_RenderLine(renderer,a.x,a.y+1.0f,b.x,b.y+1.0f);
+                    filledCircle(renderer,(a.x+b.x)*0.5f,(a.y+b.y)*0.5f,1.4f,{210,87,96,230});
                 }
             }
             if(p.kind==PrimitiveKind::Lipid)
@@ -322,7 +326,7 @@ namespace
                     {
                         const SDL_FPoint a=worldToScreen(p.body.x,p.body.y,camera,width,height);
                         const SDL_FPoint b=worldToScreen(q->body.x,q->body.y,camera,width,height);
-                        SDL_SetRenderDrawColor(renderer,93,185,218,150);
+                        SDL_SetRenderDrawColor(renderer,93,185,218,p.inProtoCell?220:150);
                         SDL_RenderLine(renderer,a.x,a.y,b.x,b.y);
                     }
                 }
@@ -355,36 +359,41 @@ namespace
             {
             case PrimitiveKind::Lipid:
             {
-                filledCircle(renderer,s.x,s.y,3.0f,p.inClosedLipidLoop?SDL_Color{126,224,244,255}:SDL_Color{105,201,232,255});
+                const SDL_Color lipidColor = p.inProtoCell
+                    ? SDL_Color{151,235,248,255}
+                    : p.inClosedLipidLoop ? SDL_Color{126,224,244,255} : SDL_Color{105,201,232,255};
+                filledCircle(renderer,s.x,s.y,2.5f,lipidColor);
                 break;
             }
             case PrimitiveKind::RnaTriplet:
             {
-                hollowCircle(renderer,s.x,s.y,8.0f,p.stopTriplet?SDL_Color{245,99,111,255}:SDL_Color{218,73,84,255});
+                const float rnaRadius = 5.0f;
+                hollowCircle(renderer,s.x,s.y,rnaRadius,p.stopTriplet?SDL_Color{245,99,111,255}:SDL_Color{218,73,84,255});
                 if(!p.stopTriplet)
                 {
                     SDL_SetRenderDrawColor(renderer,218,73,84,255);
-                    SDL_FRect peg{s.x+7.0f,s.y-2.0f,4.0f,4.0f};
+                    SDL_FRect peg{s.x+4.2f,s.y-1.2f,3.0f,2.4f};
                     SDL_RenderFillRect(renderer,&peg);
                 }
                 SDL_SetRenderDrawColor(renderer,218,73,84,255);
-                SDL_FRect socket{s.x-10.0f,s.y-2.0f,3.0f,4.0f};
+                SDL_FRect socket{s.x-6.8f,s.y-1.4f,2.2f,2.8f};
                 SDL_RenderRect(renderer,&socket);
-                drawText(renderer,p.triplet,s.x-textWidth(p.triplet,8.0f)*0.5f,s.y-5.0f,8.0f,{255,202,204,255});
+                const float labelSize = 6.2f;
+                drawText(renderer,p.triplet,s.x-textWidth(p.triplet,labelSize)*0.5f,s.y-4.0f,labelSize,{255,202,204,255});
                 break;
             }
             case PrimitiveKind::Peptide:
             {
-                if(p.excited) filledCircle(renderer,s.x,s.y,7.0f,{255,197,78,55});
-                filledCircle(renderer,s.x,s.y,3.5f,{239,143,48,255});
+                if(p.excited) filledCircle(renderer,s.x,s.y,6.0f,{255,197,78,55});
+                filledCircle(renderer,s.x,s.y,3.0f,{239,143,48,255});
                 break;
             }
             case PrimitiveKind::Atp:
             {
                 SDL_SetRenderDrawColor(renderer,248,224,79,255);
-                SDL_RenderLine(renderer,s.x-5.0f,s.y-5.0f,s.x+1.0f,s.y-1.0f);
+                SDL_RenderLine(renderer,s.x-4.0f,s.y-4.0f,s.x+1.0f,s.y-1.0f);
                 SDL_RenderLine(renderer,s.x+1.0f,s.y-1.0f,s.x-2.0f,s.y+2.0f);
-                SDL_RenderLine(renderer,s.x-2.0f,s.y+2.0f,s.x+5.0f,s.y+6.0f);
+                SDL_RenderLine(renderer,s.x-2.0f,s.y+2.0f,s.x+4.0f,s.y+5.0f);
                 break;
             }
             }
@@ -396,7 +405,7 @@ namespace
         SDL_SetRenderDrawColor(renderer,8,25,35,255); SDL_RenderClear(renderer);
         const float title=width<900?60.0f:78.0f;
         drawText(renderer,"CLADIA",(width-textWidth("CLADIA",title))*0.5f,height*0.20f,title,{221,241,237,255});
-        drawText(renderer,"ABIogenesis EVOLUTION SIMULATION",(width-textWidth("ABIOGENESIS EVOLUTION SIMULATION",18.0f))*0.5f,height*0.34f,18.0f,{126,171,176,255});
+        drawText(renderer,"ABIOGENESIS EVOLUTION SIMULATION",(width-textWidth("ABIOGENESIS EVOLUTION SIMULATION",18.0f))*0.5f,height*0.34f,18.0f,{126,171,176,255});
         const float x=(width-260.0f)*0.5f;
         play={{x,height*0.52f,260.0f,54.0f},"PLAY"};
         library={{x,height*0.52f+68.0f,260.0f,48.0f},"SPECIES LIBRARY"};
@@ -422,7 +431,9 @@ int main()
     AquaticWorld world=AquaticWorld::createDefault();
     SimulationClock clock;
     AbiogenesisSystem abiogenesis;
+    ProtocellLifecycleSystem lifecycle;
     abiogenesis.reset();
+    lifecycle.reset(abiogenesis);
     Camera camera;
     Button playButton,libraryButton,backButton,pauseButton,s1,s2,s4,s8;
     auto previous=std::chrono::steady_clock::now();
@@ -441,7 +452,9 @@ int main()
             clock.update(dt);
             const bool sun=day(clock);
             const SDL_FPoint sunW=celestialWorld(clock,true);
-            abiogenesis.update(clock.paused()?0.0f:dt*clock.speed(),clock.elapsedSimulationSeconds(),solarEnergy(clock),sun?sunW.x:0.5f);
+            const float chemistryDt = clock.paused()?0.0f:dt*clock.speed();
+            abiogenesis.update(chemistryDt,clock.elapsedSimulationSeconds(),solarEnergy(clock),sun?sunW.x:0.5f);
+            lifecycle.update(abiogenesis,chemistryDt);
         }
 
         SDL_Event event;
@@ -468,7 +481,11 @@ int main()
             {
                 if(inside(playButton.rect,event.button.x,event.button.y))
                 {
-                    clock=SimulationClock{}; camera=Camera{}; abiogenesis.reset(); screen=Screen::Game;
+                    clock=SimulationClock{};
+                    camera=Camera{};
+                    abiogenesis.reset();
+                    lifecycle.reset(abiogenesis);
+                    screen=Screen::Game;
                 }
                 else if(inside(libraryButton.rect,event.button.x,event.button.y)) screen=Screen::SpeciesLibrary;
                 continue;
