@@ -27,6 +27,10 @@ FetchContent_MakeAvailable(SDL3_ttf)
 
 add_executable(Cladia
     src/main.cpp
+    src/AquaticWorld.cpp
+    src/AquaticWorld.h
+    src/SimulationClock.cpp
+    src/SimulationClock.h
     src/CellSystem.cpp
     src/CellSystem.h
 )
