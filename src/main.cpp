@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <iostream>
 #include <string_view>
@@ -15,6 +16,7 @@ namespace
 {
     enum class Screen
     {
+        MainMenu,
         WorldSetup,
         World
     };
@@ -39,6 +41,13 @@ namespace
     {
         SDL_FRect rect{};
         float* value = nullptr;
+    };
+
+    struct Camera
+    {
+        float centerX = 0.5f;
+        float centerY = 0.5f;
+        float zoom = 1.0f;
     };
 
     TTF_Font* uiFont = nullptr;
@@ -111,6 +120,7 @@ namespace
         {
             return;
         }
+
         *slider.value = std::clamp((mouseX - slider.rect.x) / slider.rect.w, 0.0f, 1.0f);
     }
 
@@ -130,6 +140,47 @@ namespace
         SDL_SetRenderDrawColor(renderer, 221, 234, 216, 255);
         SDL_FRect knob{x + width * value - 6.0f, y + 3.0f, 12.0f, 16.0f};
         SDL_RenderFillRect(renderer, &knob);
+    }
+
+    void renderMainMenu(SDL_Renderer* renderer, int width, int height, Button& startButton)
+    {
+        SDL_SetRenderDrawColor(renderer, 12, 20, 25, 255);
+        SDL_RenderClear(renderer);
+
+        SDL_SetRenderDrawColor(renderer, 20, 34, 39, 255);
+        SDL_FRect lower{0.0f, static_cast<float>(height) * 0.62f, static_cast<float>(width), static_cast<float>(height) * 0.38f};
+        SDL_RenderFillRect(renderer, &lower);
+
+        const float titleSize = width < 1000 ? 58.0f : 76.0f;
+        const float titleX = (static_cast<float>(width) - textWidth("CLADIA", titleSize)) * 0.5f;
+        drawText(renderer, "CLADIA", titleX, static_cast<float>(height) * 0.22f, titleSize, SDL_Color{226, 237, 219, 255});
+
+        const float subtitleSize = 20.0f;
+        const float subtitleX = (static_cast<float>(width) - textWidth("EVOLUTION SIMULATION", subtitleSize)) * 0.5f;
+        drawText(renderer, "EVOLUTION SIMULATION", subtitleX, static_cast<float>(height) * 0.37f, subtitleSize, SDL_Color{153, 174, 160, 255});
+
+        startButton.rect = SDL_FRect{
+            (static_cast<float>(width) - 250.0f) * 0.5f,
+            static_cast<float>(height) * 0.56f,
+            250.0f,
+            62.0f};
+
+        SDL_SetRenderDrawColor(
+            renderer,
+            startButton.hovered ? 115 : 79,
+            startButton.hovered ? 158 : 119,
+            startButton.hovered ? 104 : 76,
+            255);
+        SDL_RenderFillRect(renderer, &startButton.rect);
+
+        const float playSize = 28.0f;
+        drawText(
+            renderer,
+            "PLAY",
+            startButton.rect.x + (startButton.rect.w - textWidth("PLAY", playSize)) * 0.5f,
+            startButton.rect.y + 13.0f,
+            playSize,
+            SDL_Color{244, 248, 238, 255});
     }
 
     void renderSetup(
@@ -176,6 +227,7 @@ namespace
             const float aspect = static_cast<float>(preview.width) / static_cast<float>(preview.height);
             SDL_FRect destination = previewFrame;
             const float frameAspect = previewFrame.w / previewFrame.h;
+
             if (frameAspect > aspect)
             {
                 destination.w = previewFrame.h * aspect;
@@ -186,6 +238,7 @@ namespace
                 destination.h = previewFrame.w / aspect;
                 destination.y = previewFrame.y + (previewFrame.h - destination.h) * 0.5f;
             }
+
             SDL_RenderTexture(renderer, preview.texture, nullptr, &destination);
         }
 
@@ -236,37 +289,96 @@ namespace
         drawText(renderer, "PLAY", playButton.rect.x + (playButton.rect.w - textWidth("PLAY", playSize)) * 0.5f, playButton.rect.y + 11.0f, playSize, SDL_Color{244, 248, 238, 255});
     }
 
-    void renderWorld(SDL_Renderer* renderer, const GeneratedWorld& world, int width, int height)
+    void clampCamera(Camera& camera)
+    {
+        camera.zoom = std::clamp(camera.zoom, 1.0f, 12.0f);
+        const float halfWidth = 0.5f / camera.zoom;
+        const float halfHeight = 0.5f / camera.zoom;
+        camera.centerX = std::clamp(camera.centerX, halfWidth, 1.0f - halfWidth);
+        camera.centerY = std::clamp(camera.centerY, halfHeight, 1.0f - halfHeight);
+    }
+
+    void changeZoom(Camera& camera, float factor, float mouseX, float mouseY, int width, int height)
+    {
+        if (width <= 0 || height <= 0)
+        {
+            return;
+        }
+
+        const float oldZoom = camera.zoom;
+        const float oldViewW = 1.0f / oldZoom;
+        const float oldViewH = 1.0f / oldZoom;
+        const float mouseU = std::clamp(mouseX / static_cast<float>(width), 0.0f, 1.0f);
+        const float mouseV = std::clamp(mouseY / static_cast<float>(height), 0.0f, 1.0f);
+
+        const float worldXUnderCursor = camera.centerX + (mouseU - 0.5f) * oldViewW;
+        const float worldYUnderCursor = camera.centerY + (mouseV - 0.5f) * oldViewH;
+
+        camera.zoom = std::clamp(camera.zoom * factor, 1.0f, 12.0f);
+
+        const float newViewW = 1.0f / camera.zoom;
+        const float newViewH = 1.0f / camera.zoom;
+        camera.centerX = worldXUnderCursor - (mouseU - 0.5f) * newViewW;
+        camera.centerY = worldYUnderCursor - (mouseV - 0.5f) * newViewH;
+        clampCamera(camera);
+    }
+
+    void updateCamera(Camera& camera, float dt, int width, int height, float mouseX, float mouseY)
+    {
+        const bool* keys = SDL_GetKeyboardState(nullptr);
+        float dx = 0.0f;
+        float dy = 0.0f;
+
+        if (keys[SDL_SCANCODE_A]) dx -= 1.0f;
+        if (keys[SDL_SCANCODE_D]) dx += 1.0f;
+        if (keys[SDL_SCANCODE_W]) dy -= 1.0f;
+        if (keys[SDL_SCANCODE_S]) dy += 1.0f;
+
+        constexpr float edgeSize = 18.0f;
+        if (mouseX <= edgeSize) dx -= 1.0f;
+        if (mouseX >= static_cast<float>(width) - edgeSize) dx += 1.0f;
+        if (mouseY <= edgeSize) dy -= 1.0f;
+        if (mouseY >= static_cast<float>(height) - edgeSize) dy += 1.0f;
+
+        if (dx != 0.0f || dy != 0.0f)
+        {
+            const float length = std::sqrt(dx * dx + dy * dy);
+            dx /= length;
+            dy /= length;
+
+            const float speed = 0.65f / camera.zoom;
+            camera.centerX += dx * speed * dt;
+            camera.centerY += dy * speed * dt;
+            clampCamera(camera);
+        }
+    }
+
+    void renderWorld(SDL_Renderer* renderer, const GeneratedWorld& world, const Camera& camera, int width, int height)
     {
         SDL_SetRenderDrawColor(renderer, 7, 12, 15, 255);
         SDL_RenderClear(renderer);
 
         if (world.texture != nullptr)
         {
-            const float sourceAspect = static_cast<float>(world.width) / static_cast<float>(world.height);
-            const float targetAspect = static_cast<float>(width) / static_cast<float>(height);
-            SDL_FRect destination{};
+            const float sourceW = static_cast<float>(world.width) / camera.zoom;
+            const float sourceH = static_cast<float>(world.height) / camera.zoom;
 
-            if (targetAspect > sourceAspect)
-            {
-                destination.h = static_cast<float>(height);
-                destination.w = destination.h * sourceAspect;
-            }
-            else
-            {
-                destination.w = static_cast<float>(width);
-                destination.h = destination.w / sourceAspect;
-            }
+            SDL_FRect source{
+                camera.centerX * static_cast<float>(world.width) - sourceW * 0.5f,
+                camera.centerY * static_cast<float>(world.height) - sourceH * 0.5f,
+                sourceW,
+                sourceH};
 
-            destination.x = (static_cast<float>(width) - destination.w) * 0.5f;
-            destination.y = (static_cast<float>(height) - destination.h) * 0.5f;
-            SDL_RenderTexture(renderer, world.texture, nullptr, &destination);
+            SDL_FRect destination{0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height)};
+            SDL_RenderTexture(renderer, world.texture, &source, &destination);
         }
 
-        SDL_SetRenderDrawColor(renderer, 7, 11, 14, 180);
-        SDL_FRect header{0.0f, 0.0f, static_cast<float>(width), 52.0f};
+        SDL_SetRenderDrawColor(renderer, 7, 11, 14, 190);
+        SDL_FRect header{0.0f, 0.0f, static_cast<float>(width), 56.0f};
         SDL_RenderFillRect(renderer, &header);
+
         drawText(renderer, "WORLD", 20.0f, 11.0f, 26.0f, SDL_Color{228, 236, 223, 255});
+        drawText(renderer, "WASD / EDGE SCROLL   MOUSE WHEEL OR +/- TO ZOOM", 115.0f, 16.0f, 16.0f, SDL_Color{162, 179, 166, 255});
     }
 }
 
@@ -318,11 +430,13 @@ int main()
     SDL_SetRenderVSync(renderer, 1);
 
     bool running = true;
-    Screen screen = Screen::WorldSetup;
+    Screen screen = Screen::MainMenu;
     SliderId activeSlider = SliderId::None;
     WorldSettings settings;
     std::uint32_t seed = makeSeed();
+    Camera camera;
 
+    Button startButton;
     Button playButton;
     Button rerollButton;
     Slider elevationSlider;
@@ -355,8 +469,14 @@ int main()
         }
     };
 
+    auto previousFrame = std::chrono::steady_clock::now();
+
     while (running)
     {
+        const auto now = std::chrono::steady_clock::now();
+        const float dt = std::clamp(std::chrono::duration<float>(now - previousFrame).count(), 0.0f, 0.05f);
+        previousFrame = now;
+
         int width = 0;
         int height = 0;
         SDL_GetWindowSizeInPixels(window, &width, &height);
@@ -365,6 +485,7 @@ int main()
         float mouseY = 0.0f;
         SDL_GetMouseState(&mouseX, &mouseY);
 
+        startButton.hovered = screen == Screen::MainMenu && pointInside(startButton.rect, mouseX, mouseY);
         playButton.hovered = screen == Screen::WorldSetup && pointInside(playButton.rect, mouseX, mouseY);
         rerollButton.hovered = screen == Screen::WorldSetup && pointInside(rerollButton.rect, mouseX, mouseY);
 
@@ -381,41 +502,69 @@ int main()
                 {
                     screen = Screen::WorldSetup;
                 }
+                else if (screen == Screen::WorldSetup)
+                {
+                    screen = Screen::MainMenu;
+                }
                 else
                 {
                     running = false;
                 }
             }
-            else if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN && event.button.button == SDL_BUTTON_LEFT && screen == Screen::WorldSetup)
+            else if (screen == Screen::World && event.type == SDL_EVENT_MOUSE_WHEEL)
             {
-                if (pointInside(playButton.rect, event.button.x, event.button.y))
+                const float factor = event.wheel.y > 0.0f ? 1.22f : (event.wheel.y < 0.0f ? 1.0f / 1.22f : 1.0f);
+                changeZoom(camera, factor, mouseX, mouseY, width, height);
+            }
+            else if (screen == Screen::World && event.type == SDL_EVENT_KEY_DOWN)
+            {
+                if (event.key.key == SDLK_PLUS || event.key.key == SDLK_EQUALS || event.key.key == SDLK_KP_PLUS)
                 {
-                    WorldGenerator::destroy(world);
-                    world = WorldGenerator::generate(renderer, 2048, 1152, seed, settings);
-                    screen = Screen::World;
+                    changeZoom(camera, 1.22f, static_cast<float>(width) * 0.5f, static_cast<float>(height) * 0.5f, width, height);
                 }
-                else if (pointInside(rerollButton.rect, event.button.x, event.button.y))
+                else if (event.key.key == SDLK_MINUS || event.key.key == SDLK_KP_MINUS)
                 {
-                    seed = makeSeed();
-                    refreshPreview();
+                    changeZoom(camera, 1.0f / 1.22f, static_cast<float>(width) * 0.5f, static_cast<float>(height) * 0.5f, width, height);
                 }
-                else
+            }
+            else if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN && event.button.button == SDL_BUTTON_LEFT)
+            {
+                if (screen == Screen::MainMenu && pointInside(startButton.rect, event.button.x, event.button.y))
                 {
-                    const std::array<std::pair<SliderId, Slider*>, 5> sliders = {{
-                        {SliderId::Elevation, &elevationSlider},
-                        {SliderId::Temperature, &temperatureSlider},
-                        {SliderId::Water, &waterSlider},
-                        {SliderId::Moisture, &moistureSlider},
-                        {SliderId::ContinentScale, &continentSlider}}};
-
-                    for (const auto& [id, slider] : sliders)
+                    screen = Screen::WorldSetup;
+                }
+                else if (screen == Screen::WorldSetup)
+                {
+                    if (pointInside(playButton.rect, event.button.x, event.button.y))
                     {
-                        if (pointInside(slider->rect, event.button.x, event.button.y))
+                        WorldGenerator::destroy(world);
+                        world = WorldGenerator::generate(renderer, 2048, 1152, seed, settings);
+                        camera = Camera{};
+                        screen = Screen::World;
+                    }
+                    else if (pointInside(rerollButton.rect, event.button.x, event.button.y))
+                    {
+                        seed = makeSeed();
+                        refreshPreview();
+                    }
+                    else
+                    {
+                        const std::array<std::pair<SliderId, Slider*>, 5> sliders = {{
+                            {SliderId::Elevation, &elevationSlider},
+                            {SliderId::Temperature, &temperatureSlider},
+                            {SliderId::Water, &waterSlider},
+                            {SliderId::Moisture, &moistureSlider},
+                            {SliderId::ContinentScale, &continentSlider}}};
+
+                        for (const auto& [id, slider] : sliders)
                         {
-                            activeSlider = id;
-                            setSliderFromMouse(*slider, event.button.x);
-                            refreshPreview();
-                            break;
+                            if (pointInside(slider->rect, event.button.x, event.button.y))
+                            {
+                                activeSlider = id;
+                                setSliderFromMouse(*slider, event.button.x);
+                                refreshPreview();
+                                break;
+                            }
                         }
                     }
                 }
@@ -435,7 +584,16 @@ int main()
             }
         }
 
-        if (screen == Screen::WorldSetup)
+        if (screen == Screen::World)
+        {
+            updateCamera(camera, dt, width, height, mouseX, mouseY);
+        }
+
+        if (screen == Screen::MainMenu)
+        {
+            renderMainMenu(renderer, width, height, startButton);
+        }
+        else if (screen == Screen::WorldSetup)
         {
             renderSetup(
                 renderer,
@@ -453,7 +611,7 @@ int main()
         }
         else
         {
-            renderWorld(renderer, world, width, height);
+            renderWorld(renderer, world, camera, width, height);
         }
 
         SDL_RenderPresent(renderer);
