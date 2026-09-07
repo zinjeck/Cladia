@@ -43,6 +43,11 @@ struct PrimitiveParticle
     float stabilizedByRna = 0.0f;
     float membraneStress = 0.0f;
 
+    // A protocell is not spawned as an entity. This flag is recomputed by the
+    // lifecycle layer when a closed lipid enclosure physically contains a
+    // linked RNA chain plus multiple peptides.
+    bool inProtoCell = false;
+
     // Peptide state.
     float atpCharge = 0.0f;
     std::uint32_t readingTriplet = 0;
@@ -76,6 +81,15 @@ public:
     [[nodiscard]] const std::vector<PrimitiveParticle>& particles() const noexcept;
     [[nodiscard]] const std::vector<HydrothermalVent>& vents() const noexcept;
     [[nodiscard]] const std::vector<EnergyRay>& energyRays() const noexcept;
+
+    // Controlled access for lower-level lifecycle/geometry systems. These do
+    // not grant the player any movement or evolution commands.
+    [[nodiscard]] std::vector<PrimitiveParticle>& mutableParticles() noexcept { return particles_; }
+    [[nodiscard]] std::vector<EnergyRay>& mutableEnergyRays() noexcept { return rays_; }
+    PrimitiveParticle& spawnPrimitive(PrimitiveKind kind, float x, float y, float vx = 0.0f, float vy = 0.0f)
+    {
+        return spawnParticle(kind, x, y, vx, vy);
+    }
 
 private:
     std::uint32_t nextId_ = 1;
