@@ -22,7 +22,6 @@ struct PrimitiveParticle
     float ageSeconds = 0.0f;
     float lifetimeSeconds = 0.0f;
 
-    // RNA triplet / chain state.
     std::string triplet;
     std::uint32_t frontLink = 0;
     std::uint32_t backLink = 0;
@@ -30,27 +29,21 @@ struct PrimitiveParticle
     bool read = false;
     double createdAt = 0.0;
 
-    // Template replication state. A paired triplet is held beside its template
-    // until the entire daughter strand exists, then the two strands repel.
     std::uint32_t templatePartnerId = 0;
     std::uint32_t replicaTripletId = 0;
     bool replicationComplete = false;
     float replicationCooldown = 0.0f;
 
-    // Lipid state.
     std::vector<std::uint32_t> lipidLinks;
     bool inClosedLipidLoop = false;
     bool stableMembrane = false;
     float stabilizedByRna = 0.0f;
     float membraneStress = 0.0f;
     float cellFormationGlowSeconds = 0.0f;
+    float lipidRebindCooldownSeconds = 0.0f;
 
-    // A protocell is not spawned as an entity. This flag is recomputed by the
-    // lifecycle layer when a closed lipid enclosure physically contains a
-    // linked RNA chain plus multiple peptides.
     bool inProtoCell = false;
 
-    // Peptide state.
     float atpCharge = 0.0f;
     std::uint32_t readingTriplet = 0;
     bool excited = false;
@@ -84,8 +77,6 @@ public:
     [[nodiscard]] const std::vector<HydrothermalVent>& vents() const noexcept;
     [[nodiscard]] const std::vector<EnergyRay>& energyRays() const noexcept;
 
-    // Controlled access for lower-level lifecycle/geometry systems. These do
-    // not grant the player any movement or evolution commands.
     [[nodiscard]] std::vector<PrimitiveParticle>& mutableParticles() noexcept { return particles_; }
     [[nodiscard]] std::vector<EnergyRay>& mutableEnergyRays() noexcept { return rays_; }
     PrimitiveParticle& spawnPrimitive(PrimitiveKind kind, float x, float y, float vx = 0.0f, float vy = 0.0f)
