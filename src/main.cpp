@@ -6,6 +6,7 @@
 #include "ProtocellLifecycle.h"
 #include "RnaPopulationTuner.h"
 #include "SimulationClock.h"
+#include "StableMembraneSystem.h"
 
 #include <algorithm>
 #include <chrono>
@@ -23,8 +24,16 @@ namespace
     constexpr float SkyTop = -0.22f;
     constexpr float OceanBottom = 1.0f;
     constexpr float WorldHeight = OceanBottom - SkyTop;
+    constexpr float MaxZoom = 16.0f;
 
     enum class Screen { MainMenu, Game, SpeciesLibrary };
+    enum class SelectionKind { None, Particle, Cell };
+
+    struct Selection
+    {
+        SelectionKind kind = SelectionKind::None;
+        std::uint32_t id = 0;
+    };
 
     struct Button
     {
@@ -96,7 +105,7 @@ namespace
 
     void clampCamera(Camera& camera)
     {
-        camera.zoom = std::clamp(camera.zoom, 1.0f, 4.0f);
+        camera.zoom = std::clamp(camera.zoom, 1.0f, MaxZoom);
         const float w = viewW(camera);
         const float h = viewH(camera);
         camera.centerX = w >= 0.999999f ? 0.5f : orderedClamp(camera.centerX, w * 0.5f, 1.0f - w * 0.5f);
@@ -137,7 +146,7 @@ namespace
 
     void changeZoom(Camera& camera, float factor)
     {
-        camera.zoom = std::clamp(camera.zoom * factor, 1.0f, 4.0f);
+        camera.zoom = std::clamp(camera.zoom * factor, 1.0f, MaxZoom);
         clampCamera(camera);
     }
 
@@ -186,6 +195,19 @@ namespace
         }
     }
 
+    void hollowCircle(SDL_Renderer* r, float cx, float cy, float radius, SDL_Color c)
+    {
+        SDL_SetRenderDrawColor(r,c.r,c.g,c.b,c.a);
+        constexpr int n=36;
+        float lx=cx+radius, ly=cy;
+        for(int i=1;i<=n;++i)
+        {
+            const float a=static_cast<float>(i)/static_cast<float>(n)*2.0f*std::numbers::pi_v<float>;
+            const float x=cx+std::cos(a)*radius, y=cy+std::sin(a)*radius;
+            SDL_RenderLine(r,lx,ly,x,y); lx=x; ly=y;
+        }
+    }
+
     std::string clockText(const SimulationClock& clock)
     {
         std::ostringstream s;
@@ -194,29 +216,8 @@ namespace
         return s.str();
     }
 
-    void renderSunlightWedge(SDL_Renderer* renderer, const SimulationClock& clock, const Camera& camera, int width, int height)
-    {
-        if (!day(clock)) return;
-        const SDL_FPoint sunW = celestialWorld(clock,true);
-        const SDL_FPoint sunS = worldToScreen(sunW.x,sunW.y,camera,width,height);
-        const SDL_FPoint surface = worldToScreen(sunW.x,0.0f,camera,width,height);
-        if (surface.y < 58.0f || surface.y > static_cast<float>(height)) return;
-        const float maxDepthY = std::min(static_cast<float>(height), surface.y + 300.0f);
-        const float span = std::max(1.0f, maxDepthY-surface.y);
-        for (float y=surface.y; y<maxDepthY; y+=5.0f)
-        {
-            const float p=(y-surface.y)/span;
-            const float halfWidth=90.0f + p*260.0f;
-            const Uint8 alpha=static_cast<Uint8>(std::max(2.0f,24.0f*(1.0f-p)));
-            SDL_SetRenderDrawColor(renderer,245,229,153,alpha);
-            SDL_RenderLine(renderer,sunS.x-halfWidth,y,sunS.x+halfWidth,y);
-        }
-        SDL_SetRenderDrawColor(renderer,245,229,153,32);
-        SDL_RenderLine(renderer,sunS.x,sunS.y,sunS.x-90.0f,surface.y);
-        SDL_RenderLine(renderer,sunS.x,sunS.y,sunS.x+90.0f,surface.y);
-    }
-
-    void renderOcean(SDL_Renderer* renderer, const AquaticWorld& world, const SimulationClock& clock, const Camera& camera, int width, int height)
+    void renderOcean(SDL_Renderer* renderer, const AquaticWorld& world, const SimulationClock& clock,
+        const Camera& camera, int width, int height)
     {
         SDL_SetRenderDrawColor(renderer,5,16,27,255);
         SDL_RenderClear(renderer);
@@ -259,7 +260,26 @@ namespace
             SDL_RenderLine(renderer,surfaceL.x,surfaceL.y,surfaceR.x,surfaceR.y);
         }
 
-        renderSunlightWedge(renderer,clock,camera,width,height);
+        if(day(clock))
+        {
+            const SDL_FPoint sunW=celestialWorld(clock,true);
+            const SDL_FPoint sunS=worldToScreen(sunW.x,sunW.y,camera,width,height);
+            const SDL_FPoint surface=worldToScreen(sunW.x,0.0f,camera,width,height);
+            if(surface.y>=58.0f && surface.y<=height)
+            {
+                const float maxDepthY=std::min(static_cast<float>(height),surface.y+300.0f);
+                const float span=std::max(1.0f,maxDepthY-surface.y);
+                for(float y=surface.y;y<maxDepthY;y+=5.0f)
+                {
+                    const float p=(y-surface.y)/span;
+                    const float halfWidth=90.0f+p*260.0f;
+                    const Uint8 alpha=static_cast<Uint8>(std::max(2.0f,24.0f*(1.0f-p)));
+                    SDL_SetRenderDrawColor(renderer,245,229,153,alpha);
+                    SDL_RenderLine(renderer,sunS.x-halfWidth,y,sunS.x+halfWidth,y);
+                }
+            }
+        }
+
         const bool sun=day(clock);
         const SDL_FPoint bodyW=celestialWorld(clock,sun);
         const SDL_FPoint bodyS=worldToScreen(bodyW.x,bodyW.y,camera,width,height);
@@ -280,48 +300,50 @@ namespace
         return nullptr;
     }
 
+    const EmergentCellSnapshot* findCell(const StableMembraneSystem& membranes, std::uint32_t id)
+    {
+        for(const EmergentCellSnapshot& c:membranes.cells()) if(c.id==id) return &c;
+        return nullptr;
+    }
+
     std::vector<const PrimitiveParticle*> chainFor(const AbiogenesisSystem& system, std::uint32_t selectedId)
     {
         std::vector<const PrimitiveParticle*> chain;
-        const PrimitiveParticle* selected = findParticle(system, selectedId);
-        if (!selected || selected->kind != PrimitiveKind::RnaTriplet) return chain;
-
-        const PrimitiveParticle* root = selected;
-        for (int guard=0; guard<256 && root && root->frontLink!=0; ++guard)
+        const PrimitiveParticle* selected=findParticle(system,selectedId);
+        if(!selected || selected->kind!=PrimitiveKind::RnaTriplet) return chain;
+        const PrimitiveParticle* root=selected;
+        for(int i=0;i<256 && root && root->frontLink!=0;++i)
         {
-            const PrimitiveParticle* previous = findParticle(system, root->frontLink);
-            if (!previous || previous->kind != PrimitiveKind::RnaTriplet) break;
-            root = previous;
+            const PrimitiveParticle* prev=findParticle(system,root->frontLink);
+            if(!prev || prev->kind!=PrimitiveKind::RnaTriplet) break;
+            root=prev;
         }
-
-        const PrimitiveParticle* cursor = root;
-        for (int guard=0; guard<256 && cursor; ++guard)
+        const PrimitiveParticle* cursor=root;
+        for(int i=0;i<256 && cursor;++i)
         {
             chain.push_back(cursor);
-            if (cursor->backLink==0) break;
-            const PrimitiveParticle* next = findParticle(system, cursor->backLink);
-            if (!next || next->kind != PrimitiveKind::RnaTriplet) break;
-            cursor = next;
+            if(cursor->backLink==0) break;
+            const PrimitiveParticle* next=findParticle(system,cursor->backLink);
+            if(!next || next->kind!=PrimitiveKind::RnaTriplet) break;
+            cursor=next;
         }
         return chain;
     }
 
-    std::uint32_t clickedTriplet(const AbiogenesisSystem& system, const Camera& camera, int width, int height, float x, float y)
+    const char* kindName(PrimitiveKind kind)
     {
-        std::uint32_t bestId = 0;
-        float bestD2 = 9.0f * 9.0f;
-        for (const PrimitiveParticle& p : system.particles())
+        switch(kind)
         {
-            if (p.kind != PrimitiveKind::RnaTriplet) continue;
-            const SDL_FPoint s = worldToScreen(p.body.x,p.body.y,camera,width,height);
-            const float dx=s.x-x, dy=s.y-y;
-            const float d2=dx*dx+dy*dy;
-            if (d2<bestD2) { bestD2=d2; bestId=p.id; }
+        case PrimitiveKind::Lipid: return "LIPID";
+        case PrimitiveKind::RnaTriplet: return "RNA TRIPLET";
+        case PrimitiveKind::Peptide: return "PEPTIDE";
+        case PrimitiveKind::Atp: return "ATP";
         }
-        return bestId;
+        return "UNKNOWN";
     }
 
-    void renderChemistry(SDL_Renderer* renderer, const AbiogenesisSystem& system, const Camera& camera, int width, int height, std::uint32_t selectedTripletId)
+    void renderChemistry(SDL_Renderer* renderer, const AbiogenesisSystem& system,
+        const StableMembraneSystem& membranes, const Camera& camera, int width, int height, const Selection& selection)
     {
         for(const PrimitiveParticle& p:system.particles())
         {
@@ -344,11 +366,20 @@ namespace
                     {
                         const SDL_FPoint a=worldToScreen(p.body.x,p.body.y,camera,width,height);
                         const SDL_FPoint b=worldToScreen(q->body.x,q->body.y,camera,width,height);
-                        SDL_SetRenderDrawColor(renderer,93,185,218,p.inProtoCell?220:150);
+                        SDL_SetRenderDrawColor(renderer,93,185,218,p.stableMembrane?230:150);
                         SDL_RenderLine(renderer,a.x,a.y,b.x,b.y);
                     }
                 }
             }
+        }
+
+        for(const EmergentCellSnapshot& cell:membranes.cells())
+        {
+            const SDL_FPoint c=worldToScreen(cell.centerX,cell.centerY,camera,width,height);
+            const float r=cell.radius*static_cast<float>(width)*camera.zoom;
+            hollowCircle(renderer,c.x,c.y,r,
+                selection.kind==SelectionKind::Cell && selection.id==cell.id
+                    ? SDL_Color{236,246,187,255}:SDL_Color{116,216,207,130});
         }
 
         for(const HydrothermalVent& vent:system.vents())
@@ -373,82 +404,130 @@ namespace
         {
             const SDL_FPoint s=worldToScreen(p.body.x,p.body.y,camera,width,height);
             if(s.y<58.0f || s.y>height) continue;
-            switch(p.kind)
+            const bool selected=selection.kind==SelectionKind::Particle && selection.id==p.id;
+            if(p.kind==PrimitiveKind::Lipid)
             {
-            case PrimitiveKind::Lipid:
-            {
-                const SDL_Color c=p.inProtoCell?SDL_Color{151,235,248,255}:p.inClosedLipidLoop?SDL_Color{126,224,244,255}:SDL_Color{105,201,232,255};
-                filledCircle(renderer,s.x,s.y,2.5f,c);
-                break;
+                filledCircle(renderer,s.x,s.y,selected?4.4f:2.6f,
+                    p.inProtoCell?SDL_Color{151,235,248,255}:p.stableMembrane?SDL_Color{125,222,241,255}:SDL_Color{105,201,232,255});
             }
-            case PrimitiveKind::RnaTriplet:
+            else if(p.kind==PrimitiveKind::RnaTriplet)
             {
-                const SDL_Color c=p.stopTriplet?SDL_Color{246,112,124,255}:SDL_Color{218,73,84,255};
-                filledCircle(renderer,s.x,s.y,p.id==selectedTripletId?3.3f:2.1f,c);
-                if(p.id==selectedTripletId)
-                {
-                    SDL_SetRenderDrawColor(renderer,255,225,228,220);
-                    SDL_FRect box{s.x-5.0f,s.y-5.0f,10.0f,10.0f};
-                    SDL_RenderRect(renderer,&box);
-                }
-                break;
+                filledCircle(renderer,s.x,s.y,selected?4.2f:2.5f,
+                    p.stopTriplet?SDL_Color{246,111,121,255}:SDL_Color{218,73,84,255});
             }
-            case PrimitiveKind::Peptide:
+            else if(p.kind==PrimitiveKind::Peptide)
             {
                 if(p.excited) filledCircle(renderer,s.x,s.y,6.0f,{255,197,78,55});
-                filledCircle(renderer,s.x,s.y,3.0f,{239,143,48,255});
-                break;
+                filledCircle(renderer,s.x,s.y,selected?4.6f:3.0f,{239,143,48,255});
             }
-            case PrimitiveKind::Atp:
+            else
             {
                 SDL_SetRenderDrawColor(renderer,248,224,79,255);
-                SDL_RenderLine(renderer,s.x-4.0f,s.y-4.0f,s.x+1.0f,s.y-1.0f);
-                SDL_RenderLine(renderer,s.x+1.0f,s.y-1.0f,s.x-2.0f,s.y+2.0f);
-                SDL_RenderLine(renderer,s.x-2.0f,s.y+2.0f,s.x+4.0f,s.y+5.0f);
-                break;
-            }
+                const float m=selected?1.4f:1.0f;
+                SDL_RenderLine(renderer,s.x-4*m,s.y-4*m,s.x+1*m,s.y-1*m);
+                SDL_RenderLine(renderer,s.x+1*m,s.y-1*m,s.x-2*m,s.y+2*m);
+                SDL_RenderLine(renderer,s.x-2*m,s.y+2*m,s.x+4*m,s.y+5*m);
             }
         }
     }
 
-    void renderTripletPanel(SDL_Renderer* renderer, const AbiogenesisSystem& system, std::uint32_t selectedId, int width, int height)
+    void renderInspector(SDL_Renderer* renderer, const AbiogenesisSystem& system,
+        const StableMembraneSystem& membranes, const Selection& selection, int width, int height)
     {
-        const PrimitiveParticle* selected=findParticle(system,selectedId);
-        if(!selected || selected->kind!=PrimitiveKind::RnaTriplet) return;
-        const auto chain=chainFor(system,selectedId);
-
-        const float panelW=std::min(390.0f,static_cast<float>(width)*0.38f);
-        const float panelH=std::min(520.0f,static_cast<float>(height)-82.0f);
+        if(selection.kind==SelectionKind::None) return;
+        const float panelW=std::min(390.0f,std::max(260.0f,static_cast<float>(width)*0.34f));
+        const float panelH=std::min(530.0f,std::max(260.0f,static_cast<float>(height)-90.0f));
         SDL_FRect panel{static_cast<float>(width)-panelW-12.0f,70.0f,panelW,panelH};
         SDL_SetRenderDrawColor(renderer,8,25,34,247); SDL_RenderFillRect(renderer,&panel);
         SDL_SetRenderDrawColor(renderer,61,113,121,255); SDL_RenderRect(renderer,&panel);
-
         float y=panel.y+16.0f;
-        drawText(renderer,"RNA TRIPLET",panel.x+18.0f,y,23.0f,{228,241,237,255}); y+=37.0f;
-        drawText(renderer,"CODE  "+selected->triplet,panel.x+18.0f,y,18.0f,{244,167,174,255}); y+=28.0f;
-        drawText(renderer,selected->stopTriplet?"TYPE  STOP (UAA)":"TYPE  CODING TRIPLET",panel.x+18.0f,y,14.0f,{157,195,191,255}); y+=23.0f;
-        drawText(renderer,"AGE  "+std::to_string(static_cast<int>(selected->ageSeconds))+" s",panel.x+18.0f,y,14.0f,{157,195,191,255}); y+=23.0f;
-        drawText(renderer,"CHAIN LENGTH  "+std::to_string(chain.size()),panel.x+18.0f,y,14.0f,{157,195,191,255}); y+=23.0f;
-        drawText(renderer,selected->replicationComplete?"REPLICATION  SEPARATING":"REPLICATION  AVAILABLE",panel.x+18.0f,y,14.0f,{157,195,191,255}); y+=30.0f;
 
-        SDL_SetRenderDrawColor(renderer,40,78,86,255); SDL_RenderLine(renderer,panel.x+18.0f,y,panel.x+panel.w-18.0f,y); y+=14.0f;
-        drawText(renderer,"FULL RNA LINK",panel.x+18.0f,y,19.0f,{228,241,237,255}); y+=30.0f;
-
-        std::string line;
-        int index=0;
-        for(const PrimitiveParticle* p:chain)
+        if(selection.kind==SelectionKind::Cell)
         {
-            std::string token=(p->id==selectedId?"[":"")+p->triplet+(p->id==selectedId?"]":"");
-            if(!line.empty()) token=" - "+token;
-            if(line.size()+token.size()>31)
-            {
-                drawText(renderer,line,panel.x+18.0f,y,13.0f,{195,216,212,255}); y+=21.0f; line.clear();
-                token=(p->id==selectedId?"[":"")+p->triplet+(p->id==selectedId?"]":"");
-            }
-            line+=token;
-            ++index;
+            const EmergentCellSnapshot* cell=findCell(membranes,selection.id);
+            if(!cell) return;
+            drawText(renderer,"PROTO-CELL",panel.x+18,y,24,{228,241,237,255}); y+=42;
+            drawText(renderer,"EMERGENT CLOSED MEMBRANE",panel.x+18,y,14,{159,197,192,255}); y+=28;
+            drawText(renderer,"RADIUS  "+std::to_string(static_cast<int>(cell->radius*6000.0f))+" game-units",panel.x+18,y,14,{151,190,187,255}); y+=24;
+            drawText(renderer,"LIPIDS  "+std::to_string(cell->lipidIds.size()),panel.x+18,y,14,{151,190,187,255}); y+=24;
+            drawText(renderer,"RNA TRIPLETS  "+std::to_string(cell->rnaIds.size()),panel.x+18,y,14,{151,190,187,255}); y+=24;
+            drawText(renderer,"PEPTIDES  "+std::to_string(cell->peptideIds.size()),panel.x+18,y,14,{151,190,187,255}); y+=36;
+            drawText(renderer,"STATUS  STABLE / PERSISTING",panel.x+18,y,14,{190,220,170,255});
+            return;
         }
-        if(!line.empty()) drawText(renderer,line,panel.x+18.0f,y,13.0f,{195,216,212,255});
+
+        const PrimitiveParticle* p=findParticle(system,selection.id);
+        if(!p) return;
+        drawText(renderer,kindName(p->kind),panel.x+18,y,24,{228,241,237,255}); y+=42;
+        drawText(renderer,"AGE  "+std::to_string(static_cast<int>(p->ageSeconds))+" s",panel.x+18,y,14,{151,190,187,255}); y+=24;
+        drawText(renderer,p->inProtoCell?"ENCLOSED  YES":"ENCLOSED  NO",panel.x+18,y,14,{151,190,187,255}); y+=28;
+
+        if(p->kind==PrimitiveKind::Lipid)
+        {
+            drawText(renderer,"LINKS  "+std::to_string(p->lipidLinks.size()),panel.x+18,y,14,{151,190,187,255}); y+=24;
+            drawText(renderer,p->stableMembrane?"MEMBRANE  STABLE":"MEMBRANE  LOOSE",panel.x+18,y,14,{151,190,187,255}); y+=24;
+            drawText(renderer,p->inClosedLipidLoop?"LOOP  CLOSED":"LOOP  OPEN",panel.x+18,y,14,{151,190,187,255});
+        }
+        else if(p->kind==PrimitiveKind::RnaTriplet)
+        {
+            drawText(renderer,"CODE  "+p->triplet,panel.x+18,y,20,p->stopTriplet?SDL_Color{245,116,126,255}:SDL_Color{224,164,169,255}); y+=32;
+            drawText(renderer,p->stopTriplet?"TYPE  UAA STOP":"TYPE  CODON",panel.x+18,y,14,{151,190,187,255}); y+=24;
+            drawText(renderer,p->replicationComplete?"REPLICATION  COMPLETE":(p->templatePartnerId||p->replicaTripletId)?"REPLICATION  COPYING":"REPLICATION  AVAILABLE",panel.x+18,y,14,{151,190,187,255}); y+=30;
+            const auto chain=chainFor(system,p->id);
+            drawText(renderer,"RNA LINK  "+std::to_string(chain.size())+" TRIPLETS",panel.x+18,y,16,{210,228,224,255}); y+=28;
+            std::string line;
+            int count=0;
+            for(const PrimitiveParticle* q:chain)
+            {
+                const std::string token=q->id==p->id?"["+q->triplet+"]":q->triplet;
+                if(!line.empty()) line+=" - ";
+                line+=token;
+                if(++count%5==0)
+                {
+                    drawText(renderer,line,panel.x+18,y,12,{180,207,202,255}); y+=20; line.clear();
+                }
+            }
+            if(!line.empty()) drawText(renderer,line,panel.x+18,y,12,{180,207,202,255});
+        }
+        else if(p->kind==PrimitiveKind::Peptide)
+        {
+            drawText(renderer,"ATP CHARGE  "+std::to_string(static_cast<int>(p->atpCharge)),panel.x+18,y,14,{151,190,187,255}); y+=24;
+            drawText(renderer,p->excited?"STATE  EXCITED":"STATE  RESTING",panel.x+18,y,14,p->excited?SDL_Color{238,199,115,255}:SDL_Color{151,190,187,255}); y+=24;
+            drawText(renderer,p->readingTriplet?"RNA READER  ATTACHED":"RNA READER  FREE",panel.x+18,y,14,{151,190,187,255});
+        }
+        else
+        {
+            const float remaining=std::max(0.0f,p->lifetimeSeconds-p->ageSeconds);
+            drawText(renderer,"ENERGY CARRIER",panel.x+18,y,14,{229,213,123,255}); y+=24;
+            drawText(renderer,"LIFETIME LEFT  "+std::to_string(static_cast<int>(remaining))+" s",panel.x+18,y,14,{151,190,187,255});
+        }
+    }
+
+    Selection selectAt(const AbiogenesisSystem& system, const StableMembraneSystem& membranes,
+        const Camera& camera, int width, int height, float x, float y)
+    {
+        Selection best;
+        float bestD2=12.0f*12.0f;
+        for(const PrimitiveParticle& p:system.particles())
+        {
+            const SDL_FPoint s=worldToScreen(p.body.x,p.body.y,camera,width,height);
+            const float dx=s.x-x, dy=s.y-y;
+            const float d2=dx*dx+dy*dy;
+            if(d2<bestD2)
+            {
+                bestD2=d2; best={SelectionKind::Particle,p.id};
+            }
+        }
+        if(best.kind!=SelectionKind::None) return best;
+
+        for(const EmergentCellSnapshot& cell:membranes.cells())
+        {
+            const SDL_FPoint c=worldToScreen(cell.centerX,cell.centerY,camera,width,height);
+            const float r=cell.radius*static_cast<float>(width)*camera.zoom;
+            const float dx=c.x-x, dy=c.y-y;
+            if(dx*dx+dy*dy<=r*r) return {SelectionKind::Cell,cell.id};
+        }
+        return {};
     }
 
     void renderMenu(SDL_Renderer* renderer,int width,int height,float mx,float my,Button& play,Button& library)
@@ -472,7 +551,8 @@ int main()
     if(!window){TTF_Quit();SDL_Quit();return 1;}
     SDL_Renderer* renderer=SDL_CreateRenderer(window,nullptr);
     if(!renderer){SDL_DestroyWindow(window);TTF_Quit();SDL_Quit();return 1;}
-    SDL_SetRenderVSync(renderer,1); SDL_SetRenderDrawBlendMode(renderer,SDL_BLENDMODE_BLEND);
+    SDL_SetRenderVSync(renderer,1);
+    SDL_SetRenderDrawBlendMode(renderer,SDL_BLENDMODE_BLEND);
     uiFont=TTF_OpenFont("Arimo-Regular.ttf",24.0f);
     if(!uiFont){SDL_DestroyRenderer(renderer);SDL_DestroyWindow(window);TTF_Quit();SDL_Quit();return 1;}
 
@@ -483,9 +563,10 @@ int main()
     AbiogenesisSystem abiogenesis;
     ProtocellLifecycleSystem lifecycle;
     RnaPopulationTuner rnaTuner;
-    abiogenesis.reset(); lifecycle.reset(abiogenesis);
+    StableMembraneSystem membranes;
+    abiogenesis.reset(); lifecycle.reset(abiogenesis); rnaTuner.reset(); membranes.reset();
     Camera camera;
-    std::uint32_t selectedTripletId=0;
+    Selection selection;
     Button playButton,libraryButton,backButton,pauseButton,s1,s2,s4,s8;
     auto previous=std::chrono::steady_clock::now();
 
@@ -505,9 +586,10 @@ int main()
             const SDL_FPoint sunW=celestialWorld(clock,true);
             const float chemistryDt=clock.paused()?0.0f:dt*clock.speed();
             abiogenesis.update(chemistryDt,clock.elapsedSimulationSeconds(),solarEnergy(clock),sun?sunW.x:0.5f);
-            lifecycle.update(abiogenesis,chemistryDt);
             rnaTuner.update(abiogenesis);
-            if(selectedTripletId!=0 && !findParticle(abiogenesis,selectedTripletId)) selectedTripletId=0;
+            membranes.preLifecycle(abiogenesis);
+            lifecycle.update(abiogenesis,chemistryDt);
+            membranes.postLifecycle(abiogenesis,chemistryDt);
         }
 
         SDL_Event event;
@@ -516,26 +598,27 @@ int main()
             if(event.type==SDL_EVENT_QUIT){running=false;continue;}
             if(event.type==SDL_EVENT_KEY_DOWN && event.key.key==SDLK_ESCAPE)
             {
+                if(selection.kind!=SelectionKind::None){selection={};continue;}
                 if(screen==Screen::MainMenu) running=false; else screen=Screen::MainMenu;
-                selectedTripletId=0; continue;
+                continue;
             }
             if(screen==Screen::Game && event.type==SDL_EVENT_MOUSE_WHEEL)
             {
-                changeZoom(camera,event.wheel.y>0?1.2f:1.0f/1.2f); continue;
+                changeZoom(camera,event.wheel.y>0?1.28f:1.0f/1.28f); continue;
             }
             if(screen==Screen::Game && event.type==SDL_EVENT_KEY_DOWN)
             {
-                if(event.key.key==SDLK_PLUS||event.key.key==SDLK_EQUALS||event.key.key==SDLK_KP_PLUS) changeZoom(camera,1.2f);
-                else if(event.key.key==SDLK_MINUS||event.key.key==SDLK_KP_MINUS) changeZoom(camera,1.0f/1.2f);
+                if(event.key.key==SDLK_PLUS||event.key.key==SDLK_EQUALS||event.key.key==SDLK_KP_PLUS) changeZoom(camera,1.28f);
+                else if(event.key.key==SDLK_MINUS||event.key.key==SDLK_KP_MINUS) changeZoom(camera,1.0f/1.28f);
                 else if(event.key.key==SDLK_SPACE) clock.togglePaused();
             }
             if(event.type!=SDL_EVENT_MOUSE_BUTTON_DOWN || event.button.button!=SDL_BUTTON_LEFT) continue;
-
             if(screen==Screen::MainMenu)
             {
                 if(inside(playButton.rect,event.button.x,event.button.y))
                 {
-                    clock=SimulationClock{}; camera=Camera{}; abiogenesis.reset(); lifecycle.reset(abiogenesis); selectedTripletId=0; screen=Screen::Game;
+                    clock=SimulationClock{}; camera=Camera{}; selection={};
+                    abiogenesis.reset(); lifecycle.reset(abiogenesis); rnaTuner.reset(); membranes.reset(); screen=Screen::Game;
                 }
                 else if(inside(libraryButton.rect,event.button.x,event.button.y)) screen=Screen::SpeciesLibrary;
                 continue;
@@ -547,17 +630,13 @@ int main()
             }
             if(screen==Screen::Game)
             {
-                if(inside(backButton.rect,event.button.x,event.button.y)){screen=Screen::MainMenu;selectedTripletId=0;continue;}
+                if(inside(backButton.rect,event.button.x,event.button.y)){screen=Screen::MainMenu;selection={};continue;}
                 if(inside(pauseButton.rect,event.button.x,event.button.y)){clock.togglePaused();continue;}
                 if(inside(s1.rect,event.button.x,event.button.y)){clock.setSpeed(1.0f);clock.setPaused(false);continue;}
                 if(inside(s2.rect,event.button.x,event.button.y)){clock.setSpeed(2.0f);clock.setPaused(false);continue;}
                 if(inside(s4.rect,event.button.x,event.button.y)){clock.setSpeed(4.0f);clock.setPaused(false);continue;}
                 if(inside(s8.rect,event.button.x,event.button.y)){clock.setSpeed(8.0f);clock.setPaused(false);continue;}
-
-                if(event.button.y>=58.0f)
-                {
-                    selectedTripletId=clickedTriplet(abiogenesis,camera,width,height,event.button.x,event.button.y);
-                }
+                if(event.button.y>=58.0f) selection=selectAt(abiogenesis,membranes,camera,width,height,event.button.x,event.button.y);
             }
         }
 
@@ -571,8 +650,10 @@ int main()
         }
         else
         {
+            if(selection.kind==SelectionKind::Particle && !findParticle(abiogenesis,selection.id)) selection={};
+            if(selection.kind==SelectionKind::Cell && !findCell(membranes,selection.id)) selection={};
             renderOcean(renderer,world,clock,camera,width,height);
-            renderChemistry(renderer,abiogenesis,camera,width,height,selectedTripletId);
+            renderChemistry(renderer,abiogenesis,membranes,camera,width,height,selection);
             SDL_FRect bar{0,0,static_cast<float>(width),58.0f}; SDL_SetRenderDrawColor(renderer,7,23,32,245); SDL_RenderFillRect(renderer,&bar);
             backButton={{10,10,80,38},"BACK"};
             pauseButton={{static_cast<float>(width)-330,10,52,38},clock.paused()?"PLAY":"PAUSE"};
@@ -584,8 +665,8 @@ int main()
             drawButton(renderer,s4,mx,my,!clock.paused()&&std::abs(clock.speed()-4.0f)<0.01f);
             drawButton(renderer,s8,mx,my,!clock.paused()&&std::abs(clock.speed()-8.0f)<0.01f);
             drawText(renderer,clockText(clock),110.0f,16.0f,18.0f,{187,215,213,255});
-            drawText(renderer,"PRIMITIVE CHEMISTRY",280.0f,17.0f,15.0f,{103,156,158,255});
-            renderTripletPanel(renderer,abiogenesis,selectedTripletId,width,height);
+            drawText(renderer,"ZOOM "+std::to_string(static_cast<int>(camera.zoom))+"X",280.0f,17.0f,15.0f,{103,156,158,255});
+            renderInspector(renderer,abiogenesis,membranes,selection,width,height);
         }
         SDL_RenderPresent(renderer);
     }
