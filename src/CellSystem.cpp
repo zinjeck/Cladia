@@ -1,27 +1,30 @@
 #include "CellSystem.h"
 
 #include <algorithm>
-#include <random>
 
-void CellSystem::seedPlaceholderOceanCells(std::uint32_t seed, std::size_t count)
+void CellSystem::clear() noexcept
 {
     cells_.clear();
-    cells_.reserve(count);
+    nextId_ = 1;
+}
 
-    std::mt19937 rng(seed ^ 0xC3115EEDu);
-    std::uniform_real_distribution<float> positionDistribution(0.04f, 0.96f);
-    std::uniform_real_distribution<float> radiusDistribution(0.008f, 0.016f);
+std::uint32_t CellSystem::spawnCell(float x, float y)
+{
+    Cell cell;
+    cell.id = nextId_++;
+    cell.x = std::clamp(x, 0.03f, 0.97f);
+    cell.y = std::clamp(y, 0.08f, 0.97f);
+    cell.radius = 0.018f;
+    cell.controlPolicy = OrganismControlPolicy::GenesAndEnvironmentOnly;
+    cells_.push_back(cell);
+    return cell.id;
+}
 
-    for (std::size_t index = 0; index < count; ++index)
-    {
-        Cell cell;
-        cell.id = static_cast<std::uint32_t>(index + 1u);
-        cell.x = positionDistribution(rng);
-        cell.y = positionDistribution(rng);
-        cell.radius = radiusDistribution(rng);
-        // No biological components are created yet.
-        cells_.push_back(cell);
-    }
+void CellSystem::updateAutonomous(float simulationSeconds) noexcept
+{
+    (void)simulationSeconds;
+    // Intentionally no movement yet. Future organism motion must come from
+    // genes and environmental response, never direct player commands.
 }
 
 const std::vector<Cell>& CellSystem::cells() const noexcept
