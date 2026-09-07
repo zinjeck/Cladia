@@ -111,13 +111,39 @@ namespace
         return WorldHeight / camera.zoom;
     }
 
+    float clampOrdered(float value, float a, float b)
+    {
+        const float low = std::min(a, b);
+        const float high = std::max(a, b);
+        return std::clamp(value, low, high);
+    }
+
     void clampCamera(Camera& camera)
     {
         camera.zoom = std::clamp(camera.zoom, 1.0f, 4.0f);
-        const float halfW = cameraViewWidth(camera) * 0.5f;
-        const float halfH = cameraViewHeight(camera) * 0.5f;
-        camera.centerX = std::clamp(camera.centerX, halfW, 1.0f - halfW);
-        camera.centerY = std::clamp(camera.centerY, SkyTop + halfH, OceanBottom - halfH);
+
+        const float viewW = cameraViewWidth(camera);
+        const float viewH = cameraViewHeight(camera);
+
+        if (viewW >= 1.0f - 0.000001f)
+        {
+            camera.centerX = 0.5f;
+        }
+        else
+        {
+            const float halfW = viewW * 0.5f;
+            camera.centerX = clampOrdered(camera.centerX, halfW, 1.0f - halfW);
+        }
+
+        if (viewH >= WorldHeight - 0.000001f)
+        {
+            camera.centerY = (SkyTop + OceanBottom) * 0.5f;
+        }
+        else
+        {
+            const float halfH = viewH * 0.5f;
+            camera.centerY = clampOrdered(camera.centerY, SkyTop + halfH, OceanBottom - halfH);
+        }
     }
 
     SDL_FPoint worldToScreen(float x, float y, const Camera& camera, int width, int height)
@@ -186,7 +212,8 @@ namespace
     float timeOfDayFraction(const SimulationClock& clock)
     {
         constexpr double SecondsPerDay = 86400.0;
-        const double seconds = std::fmod(clock.elapsedSimulationSeconds(), SecondsPerDay);
+        double seconds = std::fmod(clock.elapsedSimulationSeconds(), SecondsPerDay);
+        if (seconds < 0.0) seconds += SecondsPerDay;
         return static_cast<float>(seconds / SecondsPerDay);
     }
 
@@ -194,8 +221,8 @@ namespace
     {
         const float t = timeOfDayFraction(clock);
         if (t < 0.25f || t >= 0.75f) return 0.0f;
-        const float dayProgress = (t - 0.25f) / 0.50f;
-        return std::sin(dayProgress * std::numbers::pi_v<float>) * 1000.0f;
+        const float dayProgress = std::clamp((t - 0.25f) / 0.50f, 0.0f, 1.0f);
+        return std::max(0.0f, std::sin(dayProgress * std::numbers::pi_v<float>) * 1000.0f);
     }
 
     SDL_FPoint celestialWorldPosition(const SimulationClock& clock, bool sun)
@@ -208,7 +235,8 @@ namespace
         }
         else
         {
-            progress = t >= 0.75f ? (t - 0.75f) / 0.50f : (t + 0.25f) / 0.50f;
+            progress = t >= 0.75f ? (t - 0.75f) / 0.25f : t / 0.25f;
+            progress = std::clamp(progress, 0.0f, 1.0f);
         }
 
         return SDL_FPoint{
@@ -309,8 +337,12 @@ namespace
                 SDL_SetRenderDrawColor(renderer, 226, 232, 169, 22);
                 const SDL_FPoint sunWorld = celestialWorldPosition(clock, true);
                 const SDL_FPoint sunScreen = worldToScreen(sunWorld.x, sunWorld.y, camera, width, height);
-                SDL_FRect beam{sunScreen.x - 55.0f, surfaceLeft.y, 110.0f, std::min(220.0f, static_cast<float>(height) - surfaceLeft.y)};
-                SDL_RenderFillRect(renderer, &beam);
+                const float beamHeight = std::max(0.0f, std::min(220.0f, static_cast<float>(height) - surfaceLeft.y));
+                if (beamHeight > 0.0f)
+                {
+                    SDL_FRect beam{sunScreen.x - 55.0f, surfaceLeft.y, 110.0f, beamHeight};
+                    SDL_RenderFillRect(renderer, &beam);
+                }
             }
         }
 
@@ -423,7 +455,7 @@ namespace
         const auto generated = speciesRegistry.generated();
         if (generated.empty())
         {
-            SDL_FRect emptyPanel{30.0f, 126.0f, std::min(620.0f, static_cast<float>(width) - 60.0f), 100.0f};
+            SDL_FRect emptyPanel{30.0f, 126.0f, std::min(620.0f, std::max(120.0f, static_cast<float>(width) - 60.0f)), 100.0f};
             SDL_SetRenderDrawColor(renderer, 12, 37, 47, 255);
             SDL_RenderFillRect(renderer, &emptyPanel);
             SDL_SetRenderDrawColor(renderer, 42, 84, 94, 255);
@@ -445,8 +477,8 @@ namespace
         const AquaticWorld& world, const SimulationClock& clock, int width, int height)
     {
         const SpeciesDefinition* species = speciesRegistry.find(cell.speciesId);
-        const float panelWidth = std::min(440.0f, static_cast<float>(width) * 0.42f);
-        const float panelHeight = std::min(590.0f, static_cast<float>(height) - 82.0f);
+        const float panelWidth = std::min(440.0f, std::max(280.0f, static_cast<float>(width) * 0.42f));
+        const float panelHeight = std::min(590.0f, std::max(260.0f, static_cast<float>(height) - 82.0f));
         SDL_FRect panel{static_cast<float>(width) - panelWidth - 12.0f, 70.0f, panelWidth, panelHeight};
         SDL_SetRenderDrawColor(renderer, 8, 25, 34, 247);
         SDL_RenderFillRect(renderer, &panel);
