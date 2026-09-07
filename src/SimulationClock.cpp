@@ -5,8 +5,9 @@
 
 namespace
 {
-    // One real second advances one in-game minute at 1x.
-    constexpr double BaseSimulationRate = 60.0;
+    // Cladia runs on simulation time, not wall-clock time.
+    // At 1x, ten in-game minutes pass per real second.
+    constexpr double BaseSimulationRate = 600.0;
 }
 
 void SimulationClock::update(float realSeconds) noexcept
