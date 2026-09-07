@@ -22,8 +22,7 @@ struct PrimitiveParticle
     float ageSeconds = 0.0f;
     float lifetimeSeconds = 0.0f;
 
-    // RNA-like triplet fields. The simulated monomer carries a three-base
-    // codon label so Cladia can eventually assign gameplay meaning to codons.
+    // RNA triplet / chain state.
     std::string triplet;
     std::uint32_t frontLink = 0;
     std::uint32_t backLink = 0;
@@ -31,12 +30,20 @@ struct PrimitiveParticle
     bool read = false;
     double createdAt = 0.0;
 
-    // Lipid fields.
+    // Template replication state. A paired triplet is held beside its template
+    // until the entire daughter strand exists, then the two strands repel.
+    std::uint32_t templatePartnerId = 0;
+    std::uint32_t replicaTripletId = 0;
+    bool replicationComplete = false;
+    float replicationCooldown = 0.0f;
+
+    // Lipid state.
     std::vector<std::uint32_t> lipidLinks;
     bool inClosedLipidLoop = false;
     float stabilizedByRna = 0.0f;
+    float membraneStress = 0.0f;
 
-    // Peptide fields.
+    // Peptide state.
     float atpCharge = 0.0f;
     std::uint32_t readingTriplet = 0;
     bool excited = false;
@@ -87,14 +94,22 @@ private:
     void emitSolarProducts(float dt, float solar, float sunWorldX);
     void updatePhysics(float dt, double simulationSeconds);
     void updateRnaLinking(float dt);
+    void updateRnaReplication(float dt);
     void updateLipids(float dt);
     void updateAtpAndPeptides(float dt);
     void updatePeptideReading(float dt);
     void updateEnergyRays(float dt);
     void cullExpired();
 
+    void applyReplicationRepulsion(float dt, const std::vector<std::uint32_t>& templateChain);
+    void stressAndSplitNearbyLipidLoop(float centerX, float centerY, float axisX, float axisY, float strength);
+    void breakLipidBond(std::uint32_t aId, std::uint32_t bId);
+
     PrimitiveParticle* find(std::uint32_t id) noexcept;
     const PrimitiveParticle* find(std::uint32_t id) const noexcept;
     bool wouldCreateRnaCycle(std::uint32_t leftId, std::uint32_t rightId) const noexcept;
+    [[nodiscard]] std::vector<std::uint32_t> rnaChainFrom(std::uint32_t rootId) const;
+    [[nodiscard]] bool chainHasActiveTemplatePairing(const std::vector<std::uint32_t>& chain) const;
+    [[nodiscard]] static std::string complementaryTriplet(const std::string& triplet);
     static float distanceSquared(const PrimitiveParticle& a, const PrimitiveParticle& b) noexcept;
 };
