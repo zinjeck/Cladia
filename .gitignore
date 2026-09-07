@@ -1,0 +1,103 @@
+# =========================
+# Build output
+# =========================
+out/
+build/
+bin/
+obj/
+dist/
+
+# CMake generated files
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+Testing/
+_deps/
+
+# Ninja generated files
+.ninja_deps
+.ninja_log
+build.ninja
+rules.ninja
+
+# =========================
+# Visual Studio
+# =========================
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# =========================
+# Compiled binaries
+# =========================
+*.exe
+*.dll
+*.lib
+*.exp
+*.pdb
+*.ilk
+*.obj
+*.o
+*.a
+*.so
+*.dylib
+
+# =========================
+# Temporary / generated files
+# =========================
+*.tmp
+*.temp
+*.log
+*.bak
+*.cache
+*.dmp
+
+# =========================
+# OS junk
+# =========================
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# =========================
+# IDE / editor junk
+# =========================
+.vscode/
+.idea/
+
+# =========================
+# Keep source/code/config files
+# =========================
+!*.cpp
+!*.cc
+!*.cxx
+!*.c
+!*.h
+!*.hpp
+!*.hh
+!*.hxx
+!*.inl
+
+!CMakeLists.txt
+!*.cmake
+
+# Assembly, if Cladia ever uses it
+!*.asm
+!*.s
+!*.S
+
+# Common project data/source formats
+!*.json
+!*.toml
+!*.yaml
+!*.yml
+!*.xml
+!*.ini
+!*.cfg
+!*.txt
+!*.md
