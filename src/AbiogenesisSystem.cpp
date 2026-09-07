@@ -1,4 +1,5 @@
 #include "AbiogenesisSystem.h"
+#include "WorldTopology.h"
 
 #include <algorithm>
 #include <array>
@@ -7,9 +8,6 @@
 
 namespace
 {
-    // Every emitted triplet has its Watson-Crick RNA complement in this pool,
-    // so replication depends on locally available matching material rather
-    // than creating daughter bases from nothing.
     constexpr std::array<const char*, 16> Triplets = {
         "AUG", "UAC", "GCU", "CGA", "CCA", "GGU", "UGG", "ACC",
         "AAA", "UUU", "GGA", "CCU", "CUU", "GAA", "UAA", "AUU"};
@@ -27,7 +25,7 @@ PrimitiveParticle& AbiogenesisSystem::spawnParticle(PrimitiveKind kind, float x,
     PrimitiveParticle particle;
     particle.id = nextId_++;
     particle.kind = kind;
-    particle.body.x = std::clamp(x, 0.0f, 1.0f);
+    particle.body.x = WorldTopology::wrap01(x);
     particle.body.y = std::clamp(y, 0.002f, 0.998f);
     particle.body.vx = vx;
     particle.body.vy = vy;
@@ -167,7 +165,7 @@ void AbiogenesisSystem::emitSolarProducts(float dt, float solar, float sunWorldX
     {
         rayAccumulator_ -= 1.0f;
         EnergyRay ray;
-        ray.x = std::clamp(sunWorldX + std::sin(static_cast<float>(rays_.size()) * 2.1f) * 0.23f, 0.02f, 0.98f);
+        ray.x = WorldTopology::wrap01(sunWorldX + std::sin(static_cast<float>(rays_.size()) * 2.1f) * 0.23f);
         ray.y = 0.002f;
         ray.vx = std::sin(static_cast<float>(rays_.size()) * 1.3f) * 0.018f;
         ray.vy = 0.16f;
@@ -181,7 +179,7 @@ void AbiogenesisSystem::emitSolarProducts(float dt, float solar, float sunWorldX
         solarAtpAccumulator_ -= 1.0f;
         PrimitiveParticle& atp = spawnParticle(
             PrimitiveKind::Atp,
-            std::clamp(sunWorldX + std::sin(static_cast<float>(nextId_)) * 0.22f, 0.03f, 0.97f),
+            WorldTopology::wrap01(sunWorldX + std::sin(static_cast<float>(nextId_)) * 0.22f),
             0.018f);
         atp.body.vx = std::sin(static_cast<float>(atp.id) * 2.7f) * 0.07f;
         atp.body.vy = 0.03f + std::abs(std::cos(static_cast<float>(atp.id))) * 0.04f;
@@ -195,14 +193,13 @@ void AbiogenesisSystem::updatePhysics(float dt, double simulationSeconds)
         physics_.integrate(particle.body, dt, simulationSeconds);
         particle.ageSeconds += dt;
         particle.replicationCooldown = std::max(0.0f, particle.replicationCooldown - dt);
+        particle.cellFormationGlowSeconds = std::max(0.0f, particle.cellFormationGlowSeconds - dt);
     }
 }
 
 float AbiogenesisSystem::distanceSquared(const PrimitiveParticle& a, const PrimitiveParticle& b) noexcept
 {
-    const float dx = a.body.x - b.body.x;
-    const float dy = a.body.y - b.body.y;
-    return dx * dx + dy * dy;
+    return WorldTopology::distanceSquared(a.body.x, a.body.y, b.body.x, b.body.y);
 }
 
 PrimitiveParticle* AbiogenesisSystem::find(std::uint32_t id) noexcept
@@ -297,7 +294,7 @@ void AbiogenesisSystem::updateRnaLinking(float dt)
         if (a.kind != PrimitiveKind::RnaTriplet || a.backLink == 0) continue;
         PrimitiveParticle* b = find(a.backLink);
         if (!b) continue;
-        float dx = b->body.x - a.body.x;
+        float dx = WorldTopology::deltaX(a.body.x, b->body.x);
         float dy = b->body.y - a.body.y;
         const float d = std::sqrt(dx * dx + dy * dy) + 1e-6f;
         const float force = (d - 0.011f) * 2.8f;
@@ -367,7 +364,7 @@ void AbiogenesisSystem::updateRnaReplication(float dt)
 
             if (replica)
             {
-                float dx = templ->body.x - replica->body.x;
+                float dx = WorldTopology::deltaX(replica->body.x, templ->body.x);
                 float dy = templ->body.y - replica->body.y;
                 const float d = std::sqrt(dx * dx + dy * dy) + 1e-6f;
                 const float force = (d - TemplatePairDistance) * 4.0f;
@@ -395,14 +392,19 @@ void AbiogenesisSystem::updateRnaReplication(float dt)
 void AbiogenesisSystem::applyReplicationRepulsion(float dt, const std::vector<std::uint32_t>& chain)
 {
     float tx = 0.0f, ty = 0.0f, rx = 0.0f, ry = 0.0f, separation = 0.0f;
+    float referenceX = 0.0f;
+    bool haveReference = false;
     int count = 0;
     for (std::uint32_t id : chain)
     {
         PrimitiveParticle* t = find(id);
         PrimitiveParticle* r = t ? find(t->replicaTripletId) : nullptr;
         if (!t || !r) continue;
-        tx += t->body.x; ty += t->body.y;
-        rx += r->body.x; ry += r->body.y;
+        if (!haveReference) { referenceX = t->body.x; haveReference = true; }
+        tx += WorldTopology::unwrapNear(referenceX, t->body.x);
+        ty += t->body.y;
+        rx += WorldTopology::unwrapNear(referenceX, r->body.x);
+        ry += r->body.y;
         separation += std::sqrt(distanceSquared(*t, *r));
         ++count;
     }
@@ -426,7 +428,7 @@ void AbiogenesisSystem::applyReplicationRepulsion(float dt, const std::vector<st
         r->body.vy += ay * 0.060f * dt;
     }
 
-    const float centerX = (tx + rx) * 0.5f;
+    const float centerX = WorldTopology::wrap01((tx + rx) * 0.5f);
     const float centerY = (ty + ry) * 0.5f;
     stressAndSplitNearbyLipidLoop(centerX, centerY, ax, ay,
         std::clamp(separation / StrandReleaseDistance, 0.0f, 1.5f));
@@ -466,7 +468,7 @@ void AbiogenesisSystem::stressAndSplitNearbyLipidLoop(float cx, float cy, float 
     for (PrimitiveParticle& lipid : particles_)
     {
         if (lipid.kind != PrimitiveKind::Lipid || !lipid.inClosedLipidLoop) continue;
-        const float dx = lipid.body.x - cx;
+        const float dx = WorldTopology::deltaX(cx, lipid.body.x);
         const float dy = lipid.body.y - cy;
         if (dx * dx + dy * dy > 0.0064f) continue;
         lipid.membraneStress = std::min(2.0f, lipid.membraneStress + strength * 0.025f);
@@ -489,7 +491,7 @@ void AbiogenesisSystem::stressAndSplitNearbyLipidLoop(float cx, float cy, float 
     float high = -std::numeric_limits<float>::max();
     for (PrimitiveParticle* lipid : nearby)
     {
-        const float projection = (lipid->body.x - cx) * ax + (lipid->body.y - cy) * ay;
+        const float projection = WorldTopology::deltaX(cx, lipid->body.x) * ax + (lipid->body.y - cy) * ay;
         if (projection < low) { low = projection; negative = lipid; }
         if (projection > high) { high = projection; positive = lipid; }
     }
@@ -500,6 +502,7 @@ void AbiogenesisSystem::stressAndSplitNearbyLipidLoop(float cx, float cy, float 
     {
         lipid->membraneStress = 0.0f;
         lipid->inClosedLipidLoop = false;
+        lipid->stableMembrane = false;
     }
 }
 
@@ -541,7 +544,7 @@ void AbiogenesisSystem::updateLipids(float dt)
         {
             PrimitiveParticle* b = find(id);
             if (!b || b->id < a.id) continue;
-            float dx = b->body.x - a.body.x;
+            float dx = WorldTopology::deltaX(a.body.x, b->body.x);
             float dy = b->body.y - a.body.y;
             const float d = std::sqrt(dx * dx + dy * dy) + 1e-6f;
             const float force = (d - 0.009f) * 2.0f;
@@ -610,14 +613,13 @@ void AbiogenesisSystem::updateAtpAndPeptides(float dt)
         }
         if (!target) continue;
 
-        float dx = target->body.x - peptide.body.x;
+        float dx = WorldTopology::deltaX(peptide.body.x, target->body.x);
         float dy = target->body.y - peptide.body.y;
         const float d = std::sqrt(dx * dx + dy * dy) + 1e-6f;
         peptide.body.vx += dx / d * 0.065f * dt;
         peptide.body.vy += dy / d * 0.065f * dt;
         if (d < 0.010f && peptide.atpCharge >= 1.0f)
         {
-            peptide.atpCharge -= 1.0f;
             peptide.readingTriplet = target->id;
             target->read = true;
         }
@@ -633,7 +635,8 @@ void AbiogenesisSystem::updatePeptideReading(float dt)
         if (!current) { peptide.readingTriplet = 0; continue; }
 
         const float t = std::clamp(dt * 12.0f, 0.0f, 1.0f);
-        peptide.body.x += (current->body.x - peptide.body.x) * t;
+        const float dx = WorldTopology::deltaX(peptide.body.x, current->body.x);
+        peptide.body.x = WorldTopology::wrap01(peptide.body.x + dx * t);
         peptide.body.y += (current->body.y - peptide.body.y) * t;
         if (current->stopTriplet)
         {
@@ -652,7 +655,7 @@ void AbiogenesisSystem::updateEnergyRays(float dt)
 {
     for (EnergyRay& ray : rays_)
     {
-        ray.x += ray.vx * dt;
+        ray.x = WorldTopology::wrap01(ray.x + ray.vx * dt);
         ray.y += ray.vy * dt;
         ray.age += dt;
     }
