@@ -3,6 +3,13 @@
 #include <algorithm>
 #include <cmath>
 
+namespace
+{
+    // Cladia runs on simulation time, not wall-clock time.
+    // At 1x, ten in-game minutes pass per real second.
+    constexpr double BaseSimulationRate = 600.0;
+}
+
 void SimulationClock::update(float realSeconds) noexcept
 {
     if (paused_ || realSeconds <= 0.0f)
@@ -10,7 +17,10 @@ void SimulationClock::update(float realSeconds) noexcept
         return;
     }
 
-    elapsedSimulationSeconds_ += static_cast<double>(realSeconds) * static_cast<double>(speed_);
+    elapsedSimulationSeconds_ +=
+        static_cast<double>(realSeconds) *
+        static_cast<double>(speed_) *
+        BaseSimulationRate;
 }
 
 void SimulationClock::togglePaused() noexcept
@@ -30,7 +40,7 @@ bool SimulationClock::paused() const noexcept
 
 void SimulationClock::setSpeed(float multiplier) noexcept
 {
-    speed_ = std::clamp(multiplier, 0.25f, 16.0f);
+    speed_ = std::clamp(multiplier, 1.0f, 64.0f);
 }
 
 float SimulationClock::speed() const noexcept
