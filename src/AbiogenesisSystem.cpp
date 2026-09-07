@@ -7,9 +7,12 @@
 
 namespace
 {
+    // Every emitted triplet has its Watson-Crick RNA complement in this pool,
+    // so replication depends on locally available matching material rather
+    // than creating daughter bases from nothing.
     constexpr std::array<const char*, 16> Triplets = {
-        "AUG", "GCU", "CCA", "UGG", "AAA", "GGA", "CUU", "ACG",
-        "UUC", "GUC", "CAU", "AGC", "UAC", "CGU", "UAA", "GAU"};
+        "AUG", "UAC", "GCU", "CGA", "CCA", "GGU", "UGG", "ACC",
+        "AAA", "UUU", "GGA", "CCU", "CUU", "GAA", "UAA", "AUU"};
 
     constexpr float RnaLinkDistance = 0.018f;
     constexpr float LipidLinkDistance = 0.014f;
@@ -29,28 +32,27 @@ PrimitiveParticle& AbiogenesisSystem::spawnParticle(PrimitiveKind kind, float x,
     particle.body.vx = vx;
     particle.body.vy = vy;
 
-    switch (kind)
+    if (kind == PrimitiveKind::Lipid)
     {
-    case PrimitiveKind::Lipid:
         particle.body.radius = 0.0032f;
         particle.body.densityKgM3 = 900.0f;
         particle.lifetimeSeconds = 180.0f;
-        break;
-    case PrimitiveKind::RnaTriplet:
+    }
+    else if (kind == PrimitiveKind::RnaTriplet)
+    {
         particle.body.radius = 0.0044f;
         particle.body.densityKgM3 = 1080.0f;
-        particle.lifetimeSeconds = 0.0f;
-        break;
-    case PrimitiveKind::Peptide:
+    }
+    else if (kind == PrimitiveKind::Peptide)
+    {
         particle.body.radius = 0.0028f;
         particle.body.densityKgM3 = 1060.0f;
-        particle.lifetimeSeconds = 0.0f;
-        break;
-    case PrimitiveKind::Atp:
+    }
+    else
+    {
         particle.body.radius = 0.0022f;
         particle.body.densityKgM3 = 1040.0f;
         particle.lifetimeSeconds = 12.0f;
-        break;
     }
 
     particles_.push_back(particle);
@@ -87,8 +89,8 @@ void AbiogenesisSystem::update(float realDt, double simulationSeconds, float sur
 {
     const float dt = std::clamp(realDt, 0.0f, 0.033f);
     if (dt <= 0.0f) return;
-
     if (lastSimulationSeconds_ == 0.0) lastSimulationSeconds_ = simulationSeconds;
+
     emitVentProducts(dt, simulationSeconds);
     emitSolarProducts(dt, surfaceSolarEnergy, sunWorldX);
     updatePhysics(dt, simulationSeconds);
@@ -114,25 +116,24 @@ void AbiogenesisSystem::emitVentProducts(float dt, double simulationSeconds)
         for (std::size_t i = 0; i < vents_.size(); ++i)
         {
             const HydrothermalVent& vent = vents_[i];
-            PrimitiveParticle& nucleotide = spawnParticle(
+            PrimitiveParticle& rna = spawnParticle(
                 PrimitiveKind::RnaTriplet,
                 vent.x + std::sin(static_cast<float>(simulationSeconds * 0.01 + i)) * 0.008f,
                 vent.y - 0.012f,
                 std::sin(static_cast<float>(simulationSeconds * 0.017 + i * 2.0)) * 0.014f,
                 -0.035f);
-            const std::size_t index = static_cast<std::size_t>((nucleotide.id * 7u + static_cast<std::uint32_t>(i) * 11u) % Triplets.size());
-            nucleotide.triplet = Triplets[index];
-            nucleotide.stopTriplet = nucleotide.triplet == "UAA";
-            nucleotide.createdAt = simulationSeconds;
+            const std::size_t index = static_cast<std::size_t>((rna.id * 7u + static_cast<std::uint32_t>(i) * 11u) % Triplets.size());
+            rna.triplet = Triplets[index];
+            rna.stopTriplet = rna.triplet == "UAA";
+            rna.createdAt = simulationSeconds;
         }
     }
 
     while (ventAtpAccumulator_ >= 1.0f)
     {
         ventAtpAccumulator_ -= 1.0f;
-        for (std::size_t i = 0; i < vents_.size(); ++i)
+        for (const HydrothermalVent& vent : vents_)
         {
-            const HydrothermalVent& vent = vents_[i];
             PrimitiveParticle& atp = spawnParticle(PrimitiveKind::Atp, vent.x, vent.y - 0.015f);
             atp.body.vx = std::sin(static_cast<float>(atp.id) * 1.73f) * 0.055f;
             atp.body.vy = -0.06f - std::abs(std::cos(static_cast<float>(atp.id))) * 0.03f;
@@ -151,7 +152,6 @@ void AbiogenesisSystem::emitVentProducts(float dt, double simulationSeconds)
             ray.vx = std::sin(static_cast<float>(simulationSeconds * 0.03 + i * 1.7)) * 0.025f;
             ray.vy = -0.10f - static_cast<float>(i) * 0.008f;
             ray.lifetime = 1.2f;
-            ray.solar = false;
             rays_.push_back(ray);
         }
     }
@@ -160,7 +160,6 @@ void AbiogenesisSystem::emitVentProducts(float dt, double simulationSeconds)
 void AbiogenesisSystem::emitSolarProducts(float dt, float solar, float sunWorldX)
 {
     if (solar <= 0.0f) return;
-
     rayAccumulator_ += dt * (solar / 1000.0f) * 18.0f;
     solarAtpAccumulator_ += dt * (solar / 1000.0f) * 5.0f;
 
@@ -180,7 +179,8 @@ void AbiogenesisSystem::emitSolarProducts(float dt, float solar, float sunWorldX
     while (solarAtpAccumulator_ >= 1.0f)
     {
         solarAtpAccumulator_ -= 1.0f;
-        PrimitiveParticle& atp = spawnParticle(PrimitiveKind::Atp,
+        PrimitiveParticle& atp = spawnParticle(
+            PrimitiveKind::Atp,
             std::clamp(sunWorldX + std::sin(static_cast<float>(nextId_)) * 0.22f, 0.03f, 0.97f),
             0.018f);
         atp.body.vx = std::sin(static_cast<float>(atp.id) * 2.7f) * 0.07f;
@@ -205,6 +205,20 @@ float AbiogenesisSystem::distanceSquared(const PrimitiveParticle& a, const Primi
     return dx * dx + dy * dy;
 }
 
+PrimitiveParticle* AbiogenesisSystem::find(std::uint32_t id) noexcept
+{
+    if (id == 0) return nullptr;
+    for (PrimitiveParticle& p : particles_) if (p.id == id) return &p;
+    return nullptr;
+}
+
+const PrimitiveParticle* AbiogenesisSystem::find(std::uint32_t id) const noexcept
+{
+    if (id == 0) return nullptr;
+    for (const PrimitiveParticle& p : particles_) if (p.id == id) return &p;
+    return nullptr;
+}
+
 bool AbiogenesisSystem::wouldCreateRnaCycle(std::uint32_t leftId, std::uint32_t rightId) const noexcept
 {
     std::uint32_t cursor = rightId;
@@ -219,24 +233,24 @@ bool AbiogenesisSystem::wouldCreateRnaCycle(std::uint32_t leftId, std::uint32_t 
 
 std::vector<std::uint32_t> AbiogenesisSystem::rnaChainFrom(std::uint32_t rootId) const
 {
-    std::vector<std::uint32_t> result;
+    std::vector<std::uint32_t> chain;
     std::uint32_t cursor = rootId;
     for (int steps = 0; steps < 256 && cursor != 0; ++steps)
     {
         const PrimitiveParticle* node = find(cursor);
         if (!node || node->kind != PrimitiveKind::RnaTriplet) break;
-        result.push_back(node->id);
+        chain.push_back(cursor);
         cursor = node->backLink;
     }
-    return result;
+    return chain;
 }
 
 bool AbiogenesisSystem::chainHasActiveTemplatePairing(const std::vector<std::uint32_t>& chain) const
 {
     for (std::uint32_t id : chain)
     {
-        const PrimitiveParticle* node = find(id);
-        if (node && (node->replicaTripletId != 0 || node->templatePartnerId != 0)) return true;
+        const PrimitiveParticle* p = find(id);
+        if (p && (p->replicaTripletId != 0 || p->templatePartnerId != 0)) return true;
     }
     return false;
 }
@@ -247,14 +261,11 @@ std::string AbiogenesisSystem::complementaryTriplet(const std::string& triplet)
     result.reserve(triplet.size());
     for (char base : triplet)
     {
-        switch (base)
-        {
-        case 'A': result.push_back('U'); break;
-        case 'U': result.push_back('A'); break;
-        case 'C': result.push_back('G'); break;
-        case 'G': result.push_back('C'); break;
-        default: result.push_back('A'); break;
-        }
+        if (base == 'A') result.push_back('U');
+        else if (base == 'U') result.push_back('A');
+        else if (base == 'C') result.push_back('G');
+        else if (base == 'G') result.push_back('C');
+        else result.push_back('A');
     }
     return result;
 }
@@ -262,11 +273,9 @@ std::string AbiogenesisSystem::complementaryTriplet(const std::string& triplet)
 void AbiogenesisSystem::updateRnaLinking(float dt)
 {
     const float maxD2 = RnaLinkDistance * RnaLinkDistance;
-
     for (PrimitiveParticle& a : particles_)
     {
         if (a.kind != PrimitiveKind::RnaTriplet || a.backLink != 0 || a.stopTriplet || a.templatePartnerId != 0) continue;
-
         PrimitiveParticle* best = nullptr;
         float bestD2 = maxD2;
         for (PrimitiveParticle& b : particles_)
@@ -274,13 +283,8 @@ void AbiogenesisSystem::updateRnaLinking(float dt)
             if (&a == &b || b.kind != PrimitiveKind::RnaTriplet || b.frontLink != 0 || b.templatePartnerId != 0) continue;
             if (wouldCreateRnaCycle(a.id, b.id)) continue;
             const float d2 = distanceSquared(a, b);
-            if (d2 < bestD2)
-            {
-                bestD2 = d2;
-                best = &b;
-            }
+            if (d2 < bestD2) { bestD2 = d2; best = &b; }
         }
-
         if (best)
         {
             a.backLink = best->id;
@@ -296,10 +300,8 @@ void AbiogenesisSystem::updateRnaLinking(float dt)
         float dx = b->body.x - a.body.x;
         float dy = b->body.y - a.body.y;
         const float d = std::sqrt(dx * dx + dy * dy) + 1e-6f;
-        const float error = d - 0.011f;
-        const float force = error * 2.8f;
-        dx /= d;
-        dy /= d;
+        const float force = (d - 0.011f) * 2.8f;
+        dx /= d; dy /= d;
         a.body.vx += dx * force * dt;
         a.body.vy += dy * force * dt;
         b->body.vx -= dx * force * dt;
@@ -310,10 +312,7 @@ void AbiogenesisSystem::updateRnaLinking(float dt)
 void AbiogenesisSystem::updateRnaReplication(float dt)
 {
     const float captureD2 = ReplicationCaptureDistance * ReplicationCaptureDistance;
-
-    // A chain is eligible to act as a template only from its front/root end.
     std::vector<std::uint32_t> roots;
-    roots.reserve(particles_.size());
     for (const PrimitiveParticle& p : particles_)
     {
         if (p.kind == PrimitiveKind::RnaTriplet && p.frontLink == 0 && p.backLink != 0 && p.replicationCooldown <= 0.0f)
@@ -326,32 +325,26 @@ void AbiogenesisSystem::updateRnaReplication(float dt)
         if (chain.size() < 3) continue;
 
         bool complete = true;
-        std::uint32_t previousReplicaId = 0;
-
+        std::uint32_t previousReplica = 0;
         for (std::uint32_t templateId : chain)
         {
             PrimitiveParticle* templ = find(templateId);
             if (!templ) { complete = false; break; }
-
             PrimitiveParticle* replica = find(templ->replicaTripletId);
+
             if (!replica)
             {
                 complete = false;
                 PrimitiveParticle* candidate = nullptr;
                 float bestD2 = captureD2;
                 const std::string needed = complementaryTriplet(templ->triplet);
-
                 for (PrimitiveParticle& free : particles_)
                 {
                     if (free.kind != PrimitiveKind::RnaTriplet || free.id == templ->id) continue;
                     if (free.triplet != needed) continue;
                     if (free.frontLink != 0 || free.backLink != 0 || free.templatePartnerId != 0 || free.replicaTripletId != 0) continue;
                     const float d2 = distanceSquared(*templ, free);
-                    if (d2 < bestD2)
-                    {
-                        bestD2 = d2;
-                        candidate = &free;
-                    }
+                    if (d2 < bestD2) { bestD2 = d2; candidate = &free; }
                 }
 
                 if (candidate)
@@ -359,10 +352,9 @@ void AbiogenesisSystem::updateRnaReplication(float dt)
                     templ->replicaTripletId = candidate->id;
                     candidate->templatePartnerId = templ->id;
                     candidate->replicationCooldown = 1.0f;
-
-                    if (previousReplicaId != 0)
+                    if (previousReplica != 0)
                     {
-                        PrimitiveParticle* previous = find(previousReplicaId);
+                        PrimitiveParticle* previous = find(previousReplica);
                         if (previous && previous->backLink == 0 && !previous->stopTriplet)
                         {
                             previous->backLink = candidate->id;
@@ -375,105 +367,83 @@ void AbiogenesisSystem::updateRnaReplication(float dt)
 
             if (replica)
             {
-                // Base-pair attraction keeps the complementary triplet beside
-                // its template while the daughter backbone is assembled.
                 float dx = templ->body.x - replica->body.x;
                 float dy = templ->body.y - replica->body.y;
                 const float d = std::sqrt(dx * dx + dy * dy) + 1e-6f;
-                const float error = d - TemplatePairDistance;
-                const float force = error * 4.0f;
-                dx /= d;
-                dy /= d;
+                const float force = (d - TemplatePairDistance) * 4.0f;
+                dx /= d; dy /= d;
                 templ->body.vx -= dx * force * dt * 0.5f;
                 templ->body.vy -= dy * force * dt * 0.5f;
                 replica->body.vx += dx * force * dt;
                 replica->body.vy += dy * force * dt;
-                previousReplicaId = replica->id;
+                previousReplica = replica->id;
             }
             else
             {
-                previousReplicaId = 0;
+                previousReplica = 0;
             }
         }
 
         if (complete)
         {
-            for (std::uint32_t id : chain)
-            {
-                if (PrimitiveParticle* p = find(id)) p->replicationComplete = true;
-            }
+            for (std::uint32_t id : chain) if (PrimitiveParticle* p = find(id)) p->replicationComplete = true;
             applyReplicationRepulsion(dt, chain);
         }
     }
 }
 
-void AbiogenesisSystem::applyReplicationRepulsion(float dt, const std::vector<std::uint32_t>& templateChain)
+void AbiogenesisSystem::applyReplicationRepulsion(float dt, const std::vector<std::uint32_t>& chain)
 {
-    if (templateChain.empty()) return;
-
-    float templateX = 0.0f, templateY = 0.0f, replicaX = 0.0f, replicaY = 0.0f;
-    int pairCount = 0;
-    float meanSeparation = 0.0f;
-
-    for (std::uint32_t id : templateChain)
+    float tx = 0.0f, ty = 0.0f, rx = 0.0f, ry = 0.0f, separation = 0.0f;
+    int count = 0;
+    for (std::uint32_t id : chain)
     {
-        PrimitiveParticle* templ = find(id);
-        PrimitiveParticle* replica = templ ? find(templ->replicaTripletId) : nullptr;
-        if (!templ || !replica) continue;
-        templateX += templ->body.x;
-        templateY += templ->body.y;
-        replicaX += replica->body.x;
-        replicaY += replica->body.y;
-        meanSeparation += std::sqrt(distanceSquared(*templ, *replica));
-        ++pairCount;
+        PrimitiveParticle* t = find(id);
+        PrimitiveParticle* r = t ? find(t->replicaTripletId) : nullptr;
+        if (!t || !r) continue;
+        tx += t->body.x; ty += t->body.y;
+        rx += r->body.x; ry += r->body.y;
+        separation += std::sqrt(distanceSquared(*t, *r));
+        ++count;
     }
-    if (pairCount == 0) return;
+    if (count == 0) return;
 
-    templateX /= pairCount; templateY /= pairCount;
-    replicaX /= pairCount; replicaY /= pairCount;
-    meanSeparation /= pairCount;
+    tx /= count; ty /= count; rx /= count; ry /= count; separation /= count;
+    float ax = rx - tx;
+    float ay = ry - ty;
+    float length = std::sqrt(ax * ax + ay * ay);
+    if (length < 0.0001f) { ax = 1.0f; ay = 0.0f; length = 1.0f; }
+    ax /= length; ay /= length;
 
-    float axisX = replicaX - templateX;
-    float axisY = replicaY - templateY;
-    float axisLength = std::sqrt(axisX * axisX + axisY * axisY);
-    if (axisLength < 0.0001f)
+    for (std::uint32_t id : chain)
     {
-        axisX = 1.0f;
-        axisY = 0.0f;
-        axisLength = 1.0f;
-    }
-    axisX /= axisLength;
-    axisY /= axisLength;
-
-    for (std::uint32_t id : templateChain)
-    {
-        PrimitiveParticle* templ = find(id);
-        PrimitiveParticle* replica = templ ? find(templ->replicaTripletId) : nullptr;
-        if (!templ || !replica) continue;
-        templ->body.vx -= axisX * 0.060f * dt;
-        templ->body.vy -= axisY * 0.060f * dt;
-        replica->body.vx += axisX * 0.060f * dt;
-        replica->body.vy += axisY * 0.060f * dt;
+        PrimitiveParticle* t = find(id);
+        PrimitiveParticle* r = t ? find(t->replicaTripletId) : nullptr;
+        if (!t || !r) continue;
+        t->body.vx -= ax * 0.060f * dt;
+        t->body.vy -= ay * 0.060f * dt;
+        r->body.vx += ax * 0.060f * dt;
+        r->body.vy += ay * 0.060f * dt;
     }
 
-    const float centerX = (templateX + replicaX) * 0.5f;
-    const float centerY = (templateY + replicaY) * 0.5f;
-    const float stress = std::clamp(meanSeparation / StrandReleaseDistance, 0.0f, 1.5f);
-    stressAndSplitNearbyLipidLoop(centerX, centerY, axisX, axisY, stress);
+    const float centerX = (tx + rx) * 0.5f;
+    const float centerY = (ty + ry) * 0.5f;
+    stressAndSplitNearbyLipidLoop(centerX, centerY, ax, ay,
+        std::clamp(separation / StrandReleaseDistance, 0.0f, 1.5f));
 
-    if (meanSeparation >= StrandReleaseDistance)
+    if (separation >= StrandReleaseDistance)
     {
-        for (std::uint32_t id : templateChain)
+        for (std::uint32_t id : chain)
         {
-            PrimitiveParticle* templ = find(id);
-            PrimitiveParticle* replica = templ ? find(templ->replicaTripletId) : nullptr;
-            if (!templ || !replica) continue;
-            templ->replicaTripletId = 0;
-            templ->replicationComplete = false;
-            templ->replicationCooldown = 5.0f;
-            replica->templatePartnerId = 0;
-            replica->replicationComplete = false;
-            replica->replicationCooldown = 5.0f;
+            PrimitiveParticle* t = find(id);
+            PrimitiveParticle* r = t ? find(t->replicaTripletId) : nullptr;
+            if (!t || !r) continue;
+            t->replicaTripletId = 0;
+            t->replicationComplete = false;
+            t->replicationCooldown = 5.0f;
+            r->templatePartnerId = 0;
+            r->replicationComplete = false;
+            r->replicationCooldown = 5.0f;
         }
     }
 }
@@ -489,48 +459,43 @@ void AbiogenesisSystem::breakLipidBond(std::uint32_t aId, std::uint32_t bId)
     b->inClosedLipidLoop = false;
 }
 
-void AbiogenesisSystem::stressAndSplitNearbyLipidLoop(float centerX, float centerY, float axisX, float axisY, float strength)
+void AbiogenesisSystem::stressAndSplitNearbyLipidLoop(float cx, float cy, float ax, float ay, float strength)
 {
     if (strength <= 0.1f) return;
-
     std::vector<PrimitiveParticle*> nearby;
     for (PrimitiveParticle& lipid : particles_)
     {
         if (lipid.kind != PrimitiveKind::Lipid || !lipid.inClosedLipidLoop) continue;
-        const float dx = lipid.body.x - centerX;
-        const float dy = lipid.body.y - centerY;
-        if (dx * dx + dy * dy <= 0.0064f)
-        {
-            lipid.membraneStress = std::min(2.0f, lipid.membraneStress + strength * 0.025f);
-            const float side = dx * axisX + dy * axisY;
-            lipid.body.vx += axisX * side * strength * 0.45f;
-            lipid.body.vy += axisY * side * strength * 0.45f;
-            nearby.push_back(&lipid);
-        }
+        const float dx = lipid.body.x - cx;
+        const float dy = lipid.body.y - cy;
+        if (dx * dx + dy * dy > 0.0064f) continue;
+        lipid.membraneStress = std::min(2.0f, lipid.membraneStress + strength * 0.025f);
+        const float side = dx * ax + dy * ay;
+        lipid.body.vx += ax * side * strength * 0.45f;
+        lipid.body.vy += ay * side * strength * 0.45f;
+        nearby.push_back(&lipid);
     }
 
     if (nearby.size() < 8) return;
-    const float accumulated = std::max_element(nearby.begin(), nearby.end(), [](const PrimitiveParticle* a, const PrimitiveParticle* b)
+    const auto stressedIt = std::max_element(nearby.begin(), nearby.end(), [](const PrimitiveParticle* a, const PrimitiveParticle* b)
     {
         return a->membraneStress < b->membraneStress;
-    })[0]->membraneStress;
-    if (accumulated < 0.85f) return;
+    });
+    if (stressedIt == nearby.end() || (*stressedIt)->membraneStress < 0.85f) return;
 
     PrimitiveParticle* negative = nullptr;
     PrimitiveParticle* positive = nullptr;
-    float mostNegative = std::numeric_limits<float>::max();
-    float mostPositive = -std::numeric_limits<float>::max();
-
+    float low = std::numeric_limits<float>::max();
+    float high = -std::numeric_limits<float>::max();
     for (PrimitiveParticle* lipid : nearby)
     {
-        const float projection = (lipid->body.x - centerX) * axisX + (lipid->body.y - centerY) * axisY;
-        if (projection < mostNegative) { mostNegative = projection; negative = lipid; }
-        if (projection > mostPositive) { mostPositive = projection; positive = lipid; }
+        const float projection = (lipid->body.x - cx) * ax + (lipid->body.y - cy) * ay;
+        if (projection < low) { low = projection; negative = lipid; }
+        if (projection > high) { high = projection; positive = lipid; }
     }
 
     if (negative && !negative->lipidLinks.empty()) breakLipidBond(negative->id, negative->lipidLinks.front());
     if (positive && !positive->lipidLinks.empty()) breakLipidBond(positive->id, positive->lipidLinks.front());
-
     for (PrimitiveParticle* lipid : nearby)
     {
         lipid->membraneStress = 0.0f;
@@ -541,7 +506,6 @@ void AbiogenesisSystem::stressAndSplitNearbyLipidLoop(float centerX, float cente
 void AbiogenesisSystem::updateLipids(float dt)
 {
     const float maxD2 = LipidLinkDistance * LipidLinkDistance;
-
     for (PrimitiveParticle& lipid : particles_)
     {
         if (lipid.kind == PrimitiveKind::Lipid)
@@ -580,8 +544,7 @@ void AbiogenesisSystem::updateLipids(float dt)
             float dx = b->body.x - a.body.x;
             float dy = b->body.y - a.body.y;
             const float d = std::sqrt(dx * dx + dy * dy) + 1e-6f;
-            const float error = d - 0.009f;
-            const float force = error * 2.0f;
+            const float force = (d - 0.009f) * 2.0f;
             a.body.vx += dx / d * force * dt;
             a.body.vy += dy / d * force * dt;
             b->body.vx -= dx / d * force * dt;
@@ -610,11 +573,7 @@ void AbiogenesisSystem::updateLipids(float dt)
             PrimitiveParticle* node = find(cursor);
             if (!node || node->kind != PrimitiveKind::Lipid || node->lipidLinks.size() != 2) break;
             const std::uint32_t next = node->lipidLinks[0] == previous ? node->lipidLinks[1] : node->lipidLinks[0];
-            if (next == lipid.id && steps >= 4)
-            {
-                lipid.inClosedLipidLoop = true;
-                break;
-            }
+            if (next == lipid.id && steps >= 4) { lipid.inClosedLipidLoop = true; break; }
             previous = cursor;
             cursor = next;
         }
@@ -649,20 +608,18 @@ void AbiogenesisSystem::updateAtpAndPeptides(float dt)
             if (rna.kind != PrimitiveKind::RnaTriplet || rna.read || rna.templatePartnerId != 0) continue;
             if (rna.createdAt < oldest) { oldest = rna.createdAt; target = &rna; }
         }
+        if (!target) continue;
 
-        if (target)
+        float dx = target->body.x - peptide.body.x;
+        float dy = target->body.y - peptide.body.y;
+        const float d = std::sqrt(dx * dx + dy * dy) + 1e-6f;
+        peptide.body.vx += dx / d * 0.065f * dt;
+        peptide.body.vy += dy / d * 0.065f * dt;
+        if (d < 0.010f && peptide.atpCharge >= 1.0f)
         {
-            float dx = target->body.x - peptide.body.x;
-            float dy = target->body.y - peptide.body.y;
-            const float d = std::sqrt(dx * dx + dy * dy) + 1e-6f;
-            peptide.body.vx += dx / d * 0.065f * dt;
-            peptide.body.vy += dy / d * 0.065f * dt;
-            if (d < 0.010f && peptide.atpCharge >= 1.0f)
-            {
-                peptide.atpCharge -= 1.0f;
-                peptide.readingTriplet = target->id;
-                target->read = true;
-            }
+            peptide.atpCharge -= 1.0f;
+            peptide.readingTriplet = target->id;
+            target->read = true;
         }
     }
 }
@@ -675,24 +632,18 @@ void AbiogenesisSystem::updatePeptideReading(float dt)
         PrimitiveParticle* current = find(peptide.readingTriplet);
         if (!current) { peptide.readingTriplet = 0; continue; }
 
-        peptide.body.x += (current->body.x - peptide.body.x) * std::clamp(dt * 12.0f, 0.0f, 1.0f);
-        peptide.body.y += (current->body.y - peptide.body.y) * std::clamp(dt * 12.0f, 0.0f, 1.0f);
-
+        const float t = std::clamp(dt * 12.0f, 0.0f, 1.0f);
+        peptide.body.x += (current->body.x - peptide.body.x) * t;
+        peptide.body.y += (current->body.y - peptide.body.y) * t;
         if (current->stopTriplet)
         {
             peptide.readingTriplet = 0;
             peptide.excited = peptide.atpCharge > 0.0f;
-            continue;
         }
-
-        if (current->backLink != 0)
+        else if (current->backLink != 0)
         {
             PrimitiveParticle* next = find(current->backLink);
-            if (next)
-            {
-                next->read = true;
-                peptide.readingTriplet = next->id;
-            }
+            if (next) { next->read = true; peptide.readingTriplet = next->id; }
         }
     }
 }
@@ -710,25 +661,10 @@ void AbiogenesisSystem::updateEnergyRays(float dt)
 
 void AbiogenesisSystem::cullExpired()
 {
-    std::erase_if(particles_, [](const PrimitiveParticle& particle)
+    std::erase_if(particles_, [](const PrimitiveParticle& p)
     {
-        return particle.lifetimeSeconds < 0.0f ||
-            (particle.lifetimeSeconds > 0.0f && particle.ageSeconds >= particle.lifetimeSeconds);
+        return p.lifetimeSeconds < 0.0f || (p.lifetimeSeconds > 0.0f && p.ageSeconds >= p.lifetimeSeconds);
     });
-}
-
-PrimitiveParticle* AbiogenesisSystem::find(std::uint32_t id) noexcept
-{
-    if (id == 0) return nullptr;
-    for (PrimitiveParticle& particle : particles_) if (particle.id == id) return &particle;
-    return nullptr;
-}
-
-const PrimitiveParticle* AbiogenesisSystem::find(std::uint32_t id) const noexcept
-{
-    if (id == 0) return nullptr;
-    for (const PrimitiveParticle& particle : particles_) if (particle.id == id) return &particle;
-    return nullptr;
 }
 
 const std::vector<PrimitiveParticle>& AbiogenesisSystem::particles() const noexcept { return particles_; }
