@@ -16,13 +16,22 @@ FetchContent_Declare(
 
 FetchContent_MakeAvailable(SDL3)
 
+set(SDLTTF_VENDORED ON CACHE BOOL "Build SDL_ttf dependencies from source" FORCE)
+FetchContent_Declare(
+    SDL3_ttf
+    GIT_REPOSITORY https://github.com/libsdl-org/SDL_ttf.git
+    GIT_TAG release-3.2.2
+)
+
+FetchContent_MakeAvailable(SDL3_ttf)
+
 add_executable(Cladia
     src/main.cpp
     src/WorldGenerator.cpp
     src/WorldGenerator.h
 )
 
-target_link_libraries(Cladia PRIVATE SDL3::SDL3)
+target_link_libraries(Cladia PRIVATE SDL3::SDL3 SDL3_ttf::SDL3_ttf)
 
 add_custom_command(
     TARGET Cladia
@@ -30,4 +39,10 @@ add_custom_command(
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         $<TARGET_FILE:SDL3::SDL3>
         $<TARGET_FILE_DIR:Cladia>
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_FILE:SDL3_ttf::SDL3_ttf>
+        $<TARGET_FILE_DIR:Cladia>
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${CMAKE_SOURCE_DIR}/fonts/Arimo-Regular.ttf
+        $<TARGET_FILE_DIR:Cladia>/Arimo-Regular.ttf
 )
