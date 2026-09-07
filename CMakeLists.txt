@@ -31,10 +31,10 @@ add_executable(Cladia
     src/AquaticWorld.h
     src/SimulationClock.cpp
     src/SimulationClock.h
-    src/CellSystem.cpp
-    src/CellSystem.h
-    src/SpeciesRegistry.cpp
-    src/SpeciesRegistry.h
+    src/PhysicsField.cpp
+    src/PhysicsField.h
+    src/AbiogenesisSystem.cpp
+    src/AbiogenesisSystem.h
 )
 
 target_link_libraries(Cladia PRIVATE SDL3::SDL3 SDL3_ttf::SDL3_ttf)
