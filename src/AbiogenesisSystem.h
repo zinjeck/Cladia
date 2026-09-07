@@ -43,6 +43,7 @@ struct PrimitiveParticle
     bool stableMembrane = false;
     float stabilizedByRna = 0.0f;
     float membraneStress = 0.0f;
+    float cellFormationGlowSeconds = 0.0f;
 
     // A protocell is not spawned as an entity. This flag is recomputed by the
     // lifecycle layer when a closed lipid enclosure physically contains a
