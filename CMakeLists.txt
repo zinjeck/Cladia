@@ -18,6 +18,8 @@ FetchContent_MakeAvailable(SDL3)
 
 add_executable(Cladia
     src/main.cpp
+    src/WorldGenerator.cpp
+    src/WorldGenerator.h
 )
 
 target_link_libraries(Cladia PRIVATE SDL3::SDL3)
