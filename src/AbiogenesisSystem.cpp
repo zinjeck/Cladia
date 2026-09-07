@@ -14,6 +14,9 @@ namespace
     constexpr float RnaLinkDistance = 0.018f;
     constexpr float LipidLinkDistance = 0.014f;
     constexpr float AtpHitDistance = 0.012f;
+    constexpr float ReplicationCaptureDistance = 0.026f;
+    constexpr float TemplatePairDistance = 0.009f;
+    constexpr float StrandReleaseDistance = 0.034f;
 }
 
 PrimitiveParticle& AbiogenesisSystem::spawnParticle(PrimitiveKind kind, float x, float y, float vx, float vy)
@@ -66,7 +69,6 @@ void AbiogenesisSystem::reset()
     rays_.clear();
     vents_ = {{0.18f, 0.985f, 0.2f}, {0.50f, 0.985f, 1.8f}, {0.82f, 0.985f, 3.3f}};
 
-    // The world starts with primitive material, not completed cells.
     for (int i = 0; i < 72; ++i)
     {
         const float x = 0.08f + static_cast<float>((i * 37) % 84) / 100.0f;
@@ -91,6 +93,7 @@ void AbiogenesisSystem::update(float realDt, double simulationSeconds, float sur
     emitSolarProducts(dt, surfaceSolarEnergy, sunWorldX);
     updatePhysics(dt, simulationSeconds);
     updateRnaLinking(dt);
+    updateRnaReplication(dt);
     updateLipids(dt);
     updateAtpAndPeptides(dt);
     updatePeptideReading(dt);
@@ -191,6 +194,7 @@ void AbiogenesisSystem::updatePhysics(float dt, double simulationSeconds)
     {
         physics_.integrate(particle.body, dt, simulationSeconds);
         particle.ageSeconds += dt;
+        particle.replicationCooldown = std::max(0.0f, particle.replicationCooldown - dt);
     }
 }
 
@@ -213,20 +217,61 @@ bool AbiogenesisSystem::wouldCreateRnaCycle(std::uint32_t leftId, std::uint32_t 
     return false;
 }
 
+std::vector<std::uint32_t> AbiogenesisSystem::rnaChainFrom(std::uint32_t rootId) const
+{
+    std::vector<std::uint32_t> result;
+    std::uint32_t cursor = rootId;
+    for (int steps = 0; steps < 256 && cursor != 0; ++steps)
+    {
+        const PrimitiveParticle* node = find(cursor);
+        if (!node || node->kind != PrimitiveKind::RnaTriplet) break;
+        result.push_back(node->id);
+        cursor = node->backLink;
+    }
+    return result;
+}
+
+bool AbiogenesisSystem::chainHasActiveTemplatePairing(const std::vector<std::uint32_t>& chain) const
+{
+    for (std::uint32_t id : chain)
+    {
+        const PrimitiveParticle* node = find(id);
+        if (node && (node->replicaTripletId != 0 || node->templatePartnerId != 0)) return true;
+    }
+    return false;
+}
+
+std::string AbiogenesisSystem::complementaryTriplet(const std::string& triplet)
+{
+    std::string result;
+    result.reserve(triplet.size());
+    for (char base : triplet)
+    {
+        switch (base)
+        {
+        case 'A': result.push_back('U'); break;
+        case 'U': result.push_back('A'); break;
+        case 'C': result.push_back('G'); break;
+        case 'G': result.push_back('C'); break;
+        default: result.push_back('A'); break;
+        }
+    }
+    return result;
+}
+
 void AbiogenesisSystem::updateRnaLinking(float dt)
 {
-    (void)dt;
     const float maxD2 = RnaLinkDistance * RnaLinkDistance;
 
     for (PrimitiveParticle& a : particles_)
     {
-        if (a.kind != PrimitiveKind::RnaTriplet || a.backLink != 0 || a.stopTriplet) continue;
+        if (a.kind != PrimitiveKind::RnaTriplet || a.backLink != 0 || a.stopTriplet || a.templatePartnerId != 0) continue;
 
         PrimitiveParticle* best = nullptr;
         float bestD2 = maxD2;
         for (PrimitiveParticle& b : particles_)
         {
-            if (&a == &b || b.kind != PrimitiveKind::RnaTriplet || b.frontLink != 0) continue;
+            if (&a == &b || b.kind != PrimitiveKind::RnaTriplet || b.frontLink != 0 || b.templatePartnerId != 0) continue;
             if (wouldCreateRnaCycle(a.id, b.id)) continue;
             const float d2 = distanceSquared(a, b);
             if (d2 < bestD2)
@@ -243,8 +288,6 @@ void AbiogenesisSystem::updateRnaLinking(float dt)
         }
     }
 
-    // Directional backbone springs. Sequence does not determine polymerization;
-    // the front/back geometry represents the 5'-to-3' direction of RNA.
     for (PrimitiveParticle& a : particles_)
     {
         if (a.kind != PrimitiveKind::RnaTriplet || a.backLink == 0) continue;
@@ -264,9 +307,249 @@ void AbiogenesisSystem::updateRnaLinking(float dt)
     }
 }
 
+void AbiogenesisSystem::updateRnaReplication(float dt)
+{
+    const float captureD2 = ReplicationCaptureDistance * ReplicationCaptureDistance;
+
+    // A chain is eligible to act as a template only from its front/root end.
+    std::vector<std::uint32_t> roots;
+    roots.reserve(particles_.size());
+    for (const PrimitiveParticle& p : particles_)
+    {
+        if (p.kind == PrimitiveKind::RnaTriplet && p.frontLink == 0 && p.backLink != 0 && p.replicationCooldown <= 0.0f)
+            roots.push_back(p.id);
+    }
+
+    for (std::uint32_t rootId : roots)
+    {
+        const std::vector<std::uint32_t> chain = rnaChainFrom(rootId);
+        if (chain.size() < 3) continue;
+
+        bool complete = true;
+        std::uint32_t previousReplicaId = 0;
+
+        for (std::uint32_t templateId : chain)
+        {
+            PrimitiveParticle* templ = find(templateId);
+            if (!templ) { complete = false; break; }
+
+            PrimitiveParticle* replica = find(templ->replicaTripletId);
+            if (!replica)
+            {
+                complete = false;
+                PrimitiveParticle* candidate = nullptr;
+                float bestD2 = captureD2;
+                const std::string needed = complementaryTriplet(templ->triplet);
+
+                for (PrimitiveParticle& free : particles_)
+                {
+                    if (free.kind != PrimitiveKind::RnaTriplet || free.id == templ->id) continue;
+                    if (free.triplet != needed) continue;
+                    if (free.frontLink != 0 || free.backLink != 0 || free.templatePartnerId != 0 || free.replicaTripletId != 0) continue;
+                    const float d2 = distanceSquared(*templ, free);
+                    if (d2 < bestD2)
+                    {
+                        bestD2 = d2;
+                        candidate = &free;
+                    }
+                }
+
+                if (candidate)
+                {
+                    templ->replicaTripletId = candidate->id;
+                    candidate->templatePartnerId = templ->id;
+                    candidate->replicationCooldown = 1.0f;
+
+                    if (previousReplicaId != 0)
+                    {
+                        PrimitiveParticle* previous = find(previousReplicaId);
+                        if (previous && previous->backLink == 0 && !previous->stopTriplet)
+                        {
+                            previous->backLink = candidate->id;
+                            candidate->frontLink = previous->id;
+                        }
+                    }
+                    replica = candidate;
+                }
+            }
+
+            if (replica)
+            {
+                // Base-pair attraction keeps the complementary triplet beside
+                // its template while the daughter backbone is assembled.
+                float dx = templ->body.x - replica->body.x;
+                float dy = templ->body.y - replica->body.y;
+                const float d = std::sqrt(dx * dx + dy * dy) + 1e-6f;
+                const float error = d - TemplatePairDistance;
+                const float force = error * 4.0f;
+                dx /= d;
+                dy /= d;
+                templ->body.vx -= dx * force * dt * 0.5f;
+                templ->body.vy -= dy * force * dt * 0.5f;
+                replica->body.vx += dx * force * dt;
+                replica->body.vy += dy * force * dt;
+                previousReplicaId = replica->id;
+            }
+            else
+            {
+                previousReplicaId = 0;
+            }
+        }
+
+        if (complete)
+        {
+            for (std::uint32_t id : chain)
+            {
+                if (PrimitiveParticle* p = find(id)) p->replicationComplete = true;
+            }
+            applyReplicationRepulsion(dt, chain);
+        }
+    }
+}
+
+void AbiogenesisSystem::applyReplicationRepulsion(float dt, const std::vector<std::uint32_t>& templateChain)
+{
+    if (templateChain.empty()) return;
+
+    float templateX = 0.0f, templateY = 0.0f, replicaX = 0.0f, replicaY = 0.0f;
+    int pairCount = 0;
+    float meanSeparation = 0.0f;
+
+    for (std::uint32_t id : templateChain)
+    {
+        PrimitiveParticle* templ = find(id);
+        PrimitiveParticle* replica = templ ? find(templ->replicaTripletId) : nullptr;
+        if (!templ || !replica) continue;
+        templateX += templ->body.x;
+        templateY += templ->body.y;
+        replicaX += replica->body.x;
+        replicaY += replica->body.y;
+        meanSeparation += std::sqrt(distanceSquared(*templ, *replica));
+        ++pairCount;
+    }
+    if (pairCount == 0) return;
+
+    templateX /= pairCount; templateY /= pairCount;
+    replicaX /= pairCount; replicaY /= pairCount;
+    meanSeparation /= pairCount;
+
+    float axisX = replicaX - templateX;
+    float axisY = replicaY - templateY;
+    float axisLength = std::sqrt(axisX * axisX + axisY * axisY);
+    if (axisLength < 0.0001f)
+    {
+        axisX = 1.0f;
+        axisY = 0.0f;
+        axisLength = 1.0f;
+    }
+    axisX /= axisLength;
+    axisY /= axisLength;
+
+    for (std::uint32_t id : templateChain)
+    {
+        PrimitiveParticle* templ = find(id);
+        PrimitiveParticle* replica = templ ? find(templ->replicaTripletId) : nullptr;
+        if (!templ || !replica) continue;
+        templ->body.vx -= axisX * 0.060f * dt;
+        templ->body.vy -= axisY * 0.060f * dt;
+        replica->body.vx += axisX * 0.060f * dt;
+        replica->body.vy += axisY * 0.060f * dt;
+    }
+
+    const float centerX = (templateX + replicaX) * 0.5f;
+    const float centerY = (templateY + replicaY) * 0.5f;
+    const float stress = std::clamp(meanSeparation / StrandReleaseDistance, 0.0f, 1.5f);
+    stressAndSplitNearbyLipidLoop(centerX, centerY, axisX, axisY, stress);
+
+    if (meanSeparation >= StrandReleaseDistance)
+    {
+        for (std::uint32_t id : templateChain)
+        {
+            PrimitiveParticle* templ = find(id);
+            PrimitiveParticle* replica = templ ? find(templ->replicaTripletId) : nullptr;
+            if (!templ || !replica) continue;
+            templ->replicaTripletId = 0;
+            templ->replicationComplete = false;
+            templ->replicationCooldown = 5.0f;
+            replica->templatePartnerId = 0;
+            replica->replicationComplete = false;
+            replica->replicationCooldown = 5.0f;
+        }
+    }
+}
+
+void AbiogenesisSystem::breakLipidBond(std::uint32_t aId, std::uint32_t bId)
+{
+    PrimitiveParticle* a = find(aId);
+    PrimitiveParticle* b = find(bId);
+    if (!a || !b) return;
+    std::erase(a->lipidLinks, bId);
+    std::erase(b->lipidLinks, aId);
+    a->inClosedLipidLoop = false;
+    b->inClosedLipidLoop = false;
+}
+
+void AbiogenesisSystem::stressAndSplitNearbyLipidLoop(float centerX, float centerY, float axisX, float axisY, float strength)
+{
+    if (strength <= 0.1f) return;
+
+    std::vector<PrimitiveParticle*> nearby;
+    for (PrimitiveParticle& lipid : particles_)
+    {
+        if (lipid.kind != PrimitiveKind::Lipid || !lipid.inClosedLipidLoop) continue;
+        const float dx = lipid.body.x - centerX;
+        const float dy = lipid.body.y - centerY;
+        if (dx * dx + dy * dy <= 0.0064f)
+        {
+            lipid.membraneStress = std::min(2.0f, lipid.membraneStress + strength * 0.025f);
+            const float side = dx * axisX + dy * axisY;
+            lipid.body.vx += axisX * side * strength * 0.45f;
+            lipid.body.vy += axisY * side * strength * 0.45f;
+            nearby.push_back(&lipid);
+        }
+    }
+
+    if (nearby.size() < 8) return;
+    const float accumulated = std::max_element(nearby.begin(), nearby.end(), [](const PrimitiveParticle* a, const PrimitiveParticle* b)
+    {
+        return a->membraneStress < b->membraneStress;
+    })[0]->membraneStress;
+    if (accumulated < 0.85f) return;
+
+    PrimitiveParticle* negative = nullptr;
+    PrimitiveParticle* positive = nullptr;
+    float mostNegative = std::numeric_limits<float>::max();
+    float mostPositive = -std::numeric_limits<float>::max();
+
+    for (PrimitiveParticle* lipid : nearby)
+    {
+        const float projection = (lipid->body.x - centerX) * axisX + (lipid->body.y - centerY) * axisY;
+        if (projection < mostNegative) { mostNegative = projection; negative = lipid; }
+        if (projection > mostPositive) { mostPositive = projection; positive = lipid; }
+    }
+
+    if (negative && !negative->lipidLinks.empty()) breakLipidBond(negative->id, negative->lipidLinks.front());
+    if (positive && !positive->lipidLinks.empty()) breakLipidBond(positive->id, positive->lipidLinks.front());
+
+    for (PrimitiveParticle* lipid : nearby)
+    {
+        lipid->membraneStress = 0.0f;
+        lipid->inClosedLipidLoop = false;
+    }
+}
+
 void AbiogenesisSystem::updateLipids(float dt)
 {
     const float maxD2 = LipidLinkDistance * LipidLinkDistance;
+
+    for (PrimitiveParticle& lipid : particles_)
+    {
+        if (lipid.kind == PrimitiveKind::Lipid)
+        {
+            lipid.inClosedLipidLoop = false;
+            lipid.membraneStress = std::max(0.0f, lipid.membraneStress - dt * 0.05f);
+        }
+    }
 
     for (PrimitiveParticle& a : particles_)
     {
@@ -278,11 +561,7 @@ void AbiogenesisSystem::updateLipids(float dt)
             if (&a == &b || b.kind != PrimitiveKind::Lipid || b.lipidLinks.size() >= 2) continue;
             if (std::find(a.lipidLinks.begin(), a.lipidLinks.end(), b.id) != a.lipidLinks.end()) continue;
             const float d2 = distanceSquared(a, b);
-            if (d2 < bestD2)
-            {
-                bestD2 = d2;
-                best = &b;
-            }
+            if (d2 < bestD2) { bestD2 = d2; best = &b; }
         }
         if (best)
         {
@@ -291,8 +570,6 @@ void AbiogenesisSystem::updateLipids(float dt)
         }
     }
 
-    // Linked lipids contract gently. Degree-two chains naturally bend in the
-    // turbulent field; when both ends of a chain meet they close into a loop.
     for (PrimitiveParticle& a : particles_)
     {
         if (a.kind != PrimitiveKind::Lipid) continue;
@@ -311,8 +588,6 @@ void AbiogenesisSystem::updateLipids(float dt)
             b->body.vy -= dy / d * force * dt;
         }
 
-        // RNA proximity slows lipid degradation, approximating stabilization by
-        // encapsulated polymer without declaring the structure a cell.
         a.stabilizedByRna = 0.0f;
         for (const PrimitiveParticle& rna : particles_)
         {
@@ -325,7 +600,6 @@ void AbiogenesisSystem::updateLipids(float dt)
         if (a.stabilizedByRna > 0.0f) a.ageSeconds = std::max(0.0f, a.ageSeconds - dt * 0.80f);
     }
 
-    // Mark closed lipid networks when walking degree-two links returns to start.
     for (PrimitiveParticle& lipid : particles_)
     {
         if (lipid.kind != PrimitiveKind::Lipid || lipid.lipidLinks.size() != 2) continue;
@@ -368,17 +642,12 @@ void AbiogenesisSystem::updateAtpAndPeptides(float dt)
     for (PrimitiveParticle& peptide : particles_)
     {
         if (peptide.kind != PrimitiveKind::Peptide || !peptide.excited || peptide.readingTriplet != 0) continue;
-
         PrimitiveParticle* target = nullptr;
         double oldest = std::numeric_limits<double>::max();
         for (PrimitiveParticle& rna : particles_)
         {
-            if (rna.kind != PrimitiveKind::RnaTriplet || rna.read) continue;
-            if (rna.createdAt < oldest)
-            {
-                oldest = rna.createdAt;
-                target = &rna;
-            }
+            if (rna.kind != PrimitiveKind::RnaTriplet || rna.read || rna.templatePartnerId != 0) continue;
+            if (rna.createdAt < oldest) { oldest = rna.createdAt; target = &rna; }
         }
 
         if (target)
@@ -404,19 +673,13 @@ void AbiogenesisSystem::updatePeptideReading(float dt)
     {
         if (peptide.kind != PrimitiveKind::Peptide || peptide.readingTriplet == 0) continue;
         PrimitiveParticle* current = find(peptide.readingTriplet);
-        if (!current)
-        {
-            peptide.readingTriplet = 0;
-            continue;
-        }
+        if (!current) { peptide.readingTriplet = 0; continue; }
 
         peptide.body.x += (current->body.x - peptide.body.x) * std::clamp(dt * 12.0f, 0.0f, 1.0f);
         peptide.body.y += (current->body.y - peptide.body.y) * std::clamp(dt * 12.0f, 0.0f, 1.0f);
 
         if (current->stopTriplet)
         {
-            // UAA terminates the reading pass. This is the first codon meaning
-            // explicitly defined for Cladia; all other triplets remain inert.
             peptide.readingTriplet = 0;
             peptide.excited = peptide.atpCharge > 0.0f;
             continue;
