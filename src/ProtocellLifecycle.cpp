@@ -1,6 +1,7 @@
 #include "ProtocellLifecycle.h"
 
 #include "AbiogenesisSystem.h"
+#include "WorldTopology.h"
 
 #include <algorithm>
 #include <cmath>
@@ -31,9 +32,7 @@ namespace
 
     float distanceSquared(const PrimitiveParticle& a, const PrimitiveParticle& b)
     {
-        const float dx = a.body.x - b.body.x;
-        const float dy = a.body.y - b.body.y;
-        return dx * dx + dy * dy;
+        return WorldTopology::distanceSquared(a.body.x, a.body.y, b.body.x, b.body.y);
     }
 
     float length(float x, float y)
@@ -44,9 +43,17 @@ namespace
     void addUniqueLink(PrimitiveParticle& a, std::uint32_t id)
     {
         if (std::find(a.lipidLinks.begin(), a.lipidLinks.end(), id) == a.lipidLinks.end())
-        {
             a.lipidLinks.push_back(id);
-        }
+    }
+
+    template <typename PtrContainer>
+    float wrappedCenterX(const PtrContainer& items)
+    {
+        if (items.empty()) return 0.5f;
+        const float ref = items.front()->body.x;
+        float total = 0.0f;
+        for (const auto* p : items) total += WorldTopology::unwrapNear(ref, p->body.x);
+        return WorldTopology::wrap01(total / static_cast<float>(items.size()));
     }
 }
 
@@ -78,8 +85,6 @@ void ProtocellLifecycleSystem::seedMaterial(AbiogenesisSystem& system)
 {
     if (seeded_) return;
 
-    // Broad loose material field. Nothing starts pre-linked or pre-enclosed.
-    // There is enough lipid for multiple RNA-centered vesicles to emerge.
     constexpr int LipidCount = 210;
     constexpr int PeptideCount = 48;
 
@@ -90,7 +95,7 @@ void ProtocellLifecycleSystem::seedMaterial(AbiogenesisSystem& system)
         const float jitterX = std::sin(static_cast<float>(i) * 1.73f) * 0.010f;
         const float jitterY = std::cos(static_cast<float>(i) * 1.17f) * 0.010f;
         system.spawnPrimitive(PrimitiveKind::Lipid,
-            std::clamp(x + jitterX, 0.03f, 0.97f),
+            WorldTopology::wrap01(x + jitterX),
             std::clamp(y + jitterY, 0.08f, 0.92f));
     }
 
@@ -99,7 +104,7 @@ void ProtocellLifecycleSystem::seedMaterial(AbiogenesisSystem& system)
         const float x = 0.07f + static_cast<float>((i * 41) % 86) / 100.0f;
         const float y = 0.18f + static_cast<float>((i * 23) % 68) / 100.0f;
         system.spawnPrimitive(PrimitiveKind::Peptide,
-            std::clamp(x, 0.03f, 0.97f),
+            WorldTopology::wrap01(x),
             std::clamp(y, 0.08f, 0.92f));
     }
 
@@ -118,8 +123,6 @@ void ProtocellLifecycleSystem::normalizeParticleScales(AbiogenesisSystem& system
             break;
         case PrimitiveKind::RnaTriplet:
             particle.body.radius = 0.00155f;
-            // Game-scale suspension: vent plumes and colloidal motion keep free
-            // RNA from simply carpeting the seafloor.
             particle.body.densityKgM3 = 1025.0f;
             break;
         case PrimitiveKind::Peptide:
@@ -169,10 +172,6 @@ void ProtocellLifecycleSystem::tuneEnergyRays(AbiogenesisSystem& system)
 void ProtocellLifecycleSystem::limitFreshVentRna(AbiogenesisSystem& system)
 {
     auto& particles = system.mutableParticles();
-
-    // The core vent emitter is intentionally generous. Keep only one out of
-    // every five brand-new, still-free RNA triplets near the vent floor. This
-    // cuts effective vent RNA output by ~80% without touching replicated RNA.
     std::erase_if(particles, [](const PrimitiveParticle& p)
     {
         if (p.kind != PrimitiveKind::RnaTriplet) return false;
@@ -190,23 +189,13 @@ void ProtocellLifecycleSystem::suspendAndDisperseRna(AbiogenesisSystem& system, 
 
         const bool linked = rna.frontLink != 0 || rna.backLink != 0;
         const float depth = std::clamp(rna.body.y, 0.0f, 1.0f);
-
-        // Vent-plume carry is strongest near the bottom, then gives way to
-        // weaker suspension and lateral Brownian/current-like drift aloft.
-        const float upward = linked
-            ? (0.008f + depth * 0.010f)
-            : (0.020f + depth * 0.045f);
+        const float upward = linked ? (0.008f + depth * 0.010f) : (0.020f + depth * 0.045f);
         rna.body.vy -= upward * dt;
 
         const float phase = static_cast<float>(rna.id) * 1.618f + rna.ageSeconds * 1.7f;
         rna.body.vx += std::sin(phase) * (linked ? 0.004f : 0.012f) * dt;
         rna.body.vy += std::cos(phase * 0.73f) * (linked ? 0.002f : 0.006f) * dt;
-
-        // Prevent free triplets from becoming a sediment carpet.
-        if (!linked && rna.body.y > 0.88f)
-        {
-            rna.body.vy = std::min(rna.body.vy, -0.018f);
-        }
+        if (!linked && rna.body.y > 0.88f) rna.body.vy = std::min(rna.body.vy, -0.018f);
     }
 }
 
@@ -224,14 +213,11 @@ void ProtocellLifecycleSystem::gateRnaBonding(AbiogenesisSystem& system)
         if (it == byId.end()) { a.backLink = 0; continue; }
         PrimitiveParticle& b = *it->second;
 
-        // Replication-created daughter bonds are not spontaneous chemistry.
         if (a.templatePartnerId != 0 || b.templatePartnerId != 0 ||
             a.replicaTripletId != 0 || b.replicaTripletId != 0)
-        {
             continue;
-        }
 
-        const float dx = b.body.x - a.body.x;
+        const float dx = WorldTopology::deltaX(a.body.x, b.body.x);
         const float dy = b.body.y - a.body.y;
         const float d = length(dx, dy);
         const float rvx = b.body.vx - a.body.vx;
@@ -261,9 +247,6 @@ void ProtocellLifecycleSystem::shapeLipidAssemblies(AbiogenesisSystem& system, f
         if (p.kind == PrimitiveKind::Lipid) lipids.push_back(&p);
     }
 
-    // Stop random lipid blobs from self-maintaining. Only already-recognized
-    // protocell membranes keep their old links; loose lipids must organize
-    // around an RNA target before receiving new chain links.
     for (PrimitiveParticle* lipid : lipids)
     {
         if (!lipid->inProtoCell)
@@ -304,42 +287,34 @@ void ProtocellLifecycleSystem::shapeLipidAssemblies(AbiogenesisSystem& system, f
     std::unordered_set<std::uint32_t> assignedLipids;
     for (const auto& chain : rnaTargets)
     {
-        float cx = 0.0f;
+        const float cx = wrappedCenterX(chain);
         float cy = 0.0f;
-        for (const PrimitiveParticle* rna : chain)
-        {
-            cx += rna->body.x;
-            cy += rna->body.y;
-        }
-        cx /= static_cast<float>(chain.size());
+        for (const PrimitiveParticle* rna : chain) cy += rna->body.y;
         cy /= static_cast<float>(chain.size());
 
         float extent = 0.0f;
         for (const PrimitiveParticle* rna : chain)
-        {
-            extent = std::max(extent, length(rna->body.x - cx, rna->body.y - cy));
-        }
+            extent = std::max(extent, length(WorldTopology::deltaX(cx, rna->body.x), rna->body.y - cy));
+
         const float targetRadius = std::clamp(extent + 0.026f, 0.030f, 0.058f);
         const int desiredCount = std::clamp(
-            static_cast<int>((2.0f * std::numbers::pi_v<float> * targetRadius) / RingSpacing),
-            16, 34);
+            static_cast<int>((2.0f * std::numbers::pi_v<float> * targetRadius) / RingSpacing), 16, 34);
 
         std::vector<PrimitiveParticle*> candidates;
         for (PrimitiveParticle* lipid : lipids)
         {
             if (lipid->inProtoCell || assignedLipids.contains(lipid->id)) continue;
-            const float dx = lipid->body.x - cx;
+            const float dx = WorldTopology::deltaX(cx, lipid->body.x);
             const float dy = lipid->body.y - cy;
-            if (dx * dx + dy * dy <= RingSearchRadius * RingSearchRadius)
-            {
-                candidates.push_back(lipid);
-            }
+            if (dx * dx + dy * dy <= RingSearchRadius * RingSearchRadius) candidates.push_back(lipid);
         }
 
         std::sort(candidates.begin(), candidates.end(), [cx, cy](const PrimitiveParticle* a, const PrimitiveParticle* b)
         {
-            const float da = (a->body.x - cx) * (a->body.x - cx) + (a->body.y - cy) * (a->body.y - cy);
-            const float db = (b->body.x - cx) * (b->body.x - cx) + (b->body.y - cy) * (b->body.y - cy);
+            const float adx = WorldTopology::deltaX(cx, a->body.x);
+            const float bdx = WorldTopology::deltaX(cx, b->body.x);
+            const float da = adx * adx + (a->body.y - cy) * (a->body.y - cy);
+            const float db = bdx * bdx + (b->body.y - cy) * (b->body.y - cy);
             return da < db;
         });
         if (static_cast<int>(candidates.size()) > desiredCount) candidates.resize(static_cast<std::size_t>(desiredCount));
@@ -347,7 +322,8 @@ void ProtocellLifecycleSystem::shapeLipidAssemblies(AbiogenesisSystem& system, f
 
         std::sort(candidates.begin(), candidates.end(), [cx, cy](const PrimitiveParticle* a, const PrimitiveParticle* b)
         {
-            return std::atan2(a->body.y - cy, a->body.x - cx) < std::atan2(b->body.y - cy, b->body.x - cx);
+            return std::atan2(a->body.y - cy, WorldTopology::deltaX(cx, a->body.x)) <
+                   std::atan2(b->body.y - cy, WorldTopology::deltaX(cx, b->body.x));
         });
 
         const float n = static_cast<float>(candidates.size());
@@ -357,12 +333,12 @@ void ProtocellLifecycleSystem::shapeLipidAssemblies(AbiogenesisSystem& system, f
             assignedLipids.insert(lipid.id);
 
             const float targetAngle = 2.0f * std::numbers::pi_v<float> * static_cast<float>(i) / n;
-            const float tx = cx + std::cos(targetAngle) * targetRadius;
+            const float tx = WorldTopology::wrap01(cx + std::cos(targetAngle) * targetRadius);
             const float ty = cy + std::sin(targetAngle) * targetRadius;
-            lipid.body.vx += (tx - lipid.body.x) * 1.20f * dt;
+            lipid.body.vx += WorldTopology::deltaX(lipid.body.x, tx) * 1.20f * dt;
             lipid.body.vy += (ty - lipid.body.y) * 1.20f * dt;
 
-            const float radialX = lipid.body.x - cx;
+            const float radialX = WorldTopology::deltaX(cx, lipid.body.x);
             const float radialY = lipid.body.y - cy;
             const float radialD = length(radialX, radialY) + 1e-6f;
             const float radialError = targetRadius - radialD;
@@ -370,14 +346,11 @@ void ProtocellLifecycleSystem::shapeLipidAssemblies(AbiogenesisSystem& system, f
             lipid.body.vy += radialY / radialD * radialError * 0.55f * dt;
         }
 
-        // Links are only created between angular neighbors on the RNA-centered
-        // perimeter. This produces a chain/ring rather than a compact blob.
         for (std::size_t i = 0; i < candidates.size(); ++i)
         {
             PrimitiveParticle& a = *candidates[i];
             PrimitiveParticle& b = *candidates[(i + 1) % candidates.size()];
-            const float d = std::sqrt(distanceSquared(a, b));
-            if (d <= RingLinkDistance)
+            if (std::sqrt(distanceSquared(a, b)) <= RingLinkDistance)
             {
                 addUniqueLink(a, b.id);
                 addUniqueLink(b, a.id);
@@ -385,18 +358,10 @@ void ProtocellLifecycleSystem::shapeLipidAssemblies(AbiogenesisSystem& system, f
         }
 
         bool closed = candidates.size() >= 12;
-        for (PrimitiveParticle* lipid : candidates)
-        {
-            closed = closed && lipid->lipidLinks.size() == 2;
-        }
-        if (closed)
-        {
-            for (PrimitiveParticle* lipid : candidates) lipid->inClosedLipidLoop = true;
-        }
+        for (PrimitiveParticle* lipid : candidates) closed = closed && lipid->lipidLinks.size() == 2;
+        if (closed) for (PrimitiveParticle* lipid : candidates) lipid->inClosedLipidLoop = true;
     }
 
-    // Loose lipids that are not participating in an RNA-centered ring repel at
-    // very short range so they remain dispersed instead of forming blue clumps.
     for (std::size_t i = 0; i < lipids.size(); ++i)
     {
         PrimitiveParticle& a = *lipids[i];
@@ -405,13 +370,12 @@ void ProtocellLifecycleSystem::shapeLipidAssemblies(AbiogenesisSystem& system, f
         {
             PrimitiveParticle& b = *lipids[j];
             if (b.inProtoCell || assignedLipids.contains(b.id)) continue;
-            float dx = b.body.x - a.body.x;
+            float dx = WorldTopology::deltaX(a.body.x, b.body.x);
             float dy = b.body.y - a.body.y;
             const float d = length(dx, dy);
             if (d <= 1e-6f || d > 0.012f) continue;
             const float repel = (0.012f - d) * 0.80f;
-            dx /= d;
-            dy /= d;
+            dx /= d; dy /= d;
             a.body.vx -= dx * repel * dt;
             a.body.vy -= dy * repel * dt;
             b.body.vx += dx * repel * dt;
@@ -449,19 +413,19 @@ void ProtocellLifecycleSystem::classifyProtocells(AbiogenesisSystem& system)
 
         if (component.size() < 12) continue;
         bool closed = true;
-        float cx = 0.0f, cy = 0.0f;
+        float cy = 0.0f;
         for (PrimitiveParticle* lipid : component)
         {
             closed = closed && lipid->lipidLinks.size() == 2 && lipid->inClosedLipidLoop;
-            cx += lipid->body.x;
             cy += lipid->body.y;
         }
         if (!closed) continue;
-        cx /= static_cast<float>(component.size());
+        const float cx = wrappedCenterX(component);
         cy /= static_cast<float>(component.size());
 
         float radius = 0.0f;
-        for (PrimitiveParticle* lipid : component) radius += length(lipid->body.x - cx, lipid->body.y - cy);
+        for (PrimitiveParticle* lipid : component)
+            radius += length(WorldTopology::deltaX(cx, lipid->body.x), lipid->body.y - cy);
         radius /= static_cast<float>(component.size());
         if (radius < 0.026f) continue;
 
@@ -470,7 +434,7 @@ void ProtocellLifecycleSystem::classifyProtocells(AbiogenesisSystem& system)
         int peptides = 0;
         for (const PrimitiveParticle& p : particles)
         {
-            const float dx = p.body.x - cx;
+            const float dx = WorldTopology::deltaX(cx, p.body.x);
             const float dy = p.body.y - cy;
             if (dx * dx + dy * dy > interiorR2) continue;
             if (p.kind == PrimitiveKind::RnaTriplet && (p.frontLink != 0 || p.backLink != 0)) ++linkedRnaTriplets;
@@ -482,7 +446,7 @@ void ProtocellLifecycleSystem::classifyProtocells(AbiogenesisSystem& system)
         for (PrimitiveParticle& p : particles)
         {
             if (p.kind == PrimitiveKind::Atp) continue;
-            const float dx = p.body.x - cx;
+            const float dx = WorldTopology::deltaX(cx, p.body.x);
             const float dy = p.body.y - cy;
             if (dx * dx + dy * dy <= interiorR2) p.inProtoCell = true;
         }
