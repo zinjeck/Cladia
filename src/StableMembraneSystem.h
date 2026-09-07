@@ -22,6 +22,7 @@ class StableMembraneSystem
 {
 public:
     void reset();
+    void prepareReplication(AbiogenesisSystem& system, float dt);
     void preLifecycle(AbiogenesisSystem& system);
     void postLifecycle(AbiogenesisSystem& system, float dt);
 
@@ -30,6 +31,7 @@ public:
 private:
     std::unordered_set<std::uint32_t> stableLipids_;
     std::unordered_map<std::uint32_t, float> membraneAges_;
+    std::unordered_map<std::uint32_t, float> replicationWindows_;
     std::vector<EmergentCellSnapshot> cells_;
 
     void stabilizeClosedLoops(AbiogenesisSystem& system, float dt);
