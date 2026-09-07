@@ -1,0 +1,100 @@
+#pragma once
+
+#include "PhysicsField.h"
+
+#include <cstdint>
+#include <string>
+#include <vector>
+
+enum class PrimitiveKind
+{
+    Lipid,
+    RnaTriplet,
+    Peptide,
+    Atp
+};
+
+struct PrimitiveParticle
+{
+    std::uint32_t id = 0;
+    PrimitiveKind kind = PrimitiveKind::Lipid;
+    ParticleBody body{};
+    float ageSeconds = 0.0f;
+    float lifetimeSeconds = 0.0f;
+
+    // RNA-like triplet fields. The simulated monomer carries a three-base
+    // codon label so Cladia can eventually assign gameplay meaning to codons.
+    std::string triplet;
+    std::uint32_t frontLink = 0;
+    std::uint32_t backLink = 0;
+    bool stopTriplet = false;
+    bool read = false;
+    double createdAt = 0.0;
+
+    // Lipid fields.
+    std::vector<std::uint32_t> lipidLinks;
+    bool inClosedLipidLoop = false;
+    float stabilizedByRna = 0.0f;
+
+    // Peptide fields.
+    float atpCharge = 0.0f;
+    std::uint32_t readingTriplet = 0;
+    bool excited = false;
+};
+
+struct HydrothermalVent
+{
+    float x = 0.5f;
+    float y = 0.985f;
+    float phase = 0.0f;
+};
+
+struct EnergyRay
+{
+    float x = 0.5f;
+    float y = 0.5f;
+    float vx = 0.0f;
+    float vy = 0.0f;
+    float age = 0.0f;
+    float lifetime = 1.0f;
+    bool solar = false;
+};
+
+class AbiogenesisSystem
+{
+public:
+    void reset();
+    void update(float realDt, double simulationSeconds, float surfaceSolarEnergy, float sunWorldX);
+
+    [[nodiscard]] const std::vector<PrimitiveParticle>& particles() const noexcept;
+    [[nodiscard]] const std::vector<HydrothermalVent>& vents() const noexcept;
+    [[nodiscard]] const std::vector<EnergyRay>& energyRays() const noexcept;
+
+private:
+    std::uint32_t nextId_ = 1;
+    double lastSimulationSeconds_ = 0.0;
+    float ventNucleotideAccumulator_ = 0.0f;
+    float ventAtpAccumulator_ = 0.0f;
+    float rayAccumulator_ = 0.0f;
+    float solarAtpAccumulator_ = 0.0f;
+    std::vector<PrimitiveParticle> particles_;
+    std::vector<HydrothermalVent> vents_;
+    std::vector<EnergyRay> rays_;
+    PhysicsField physics_;
+
+    PrimitiveParticle& spawnParticle(PrimitiveKind kind, float x, float y, float vx = 0.0f, float vy = 0.0f);
+    void emitVentProducts(float dt, double simulationSeconds);
+    void emitSolarProducts(float dt, float solar, float sunWorldX);
+    void updatePhysics(float dt, double simulationSeconds);
+    void updateRnaLinking(float dt);
+    void updateLipids(float dt);
+    void updateAtpAndPeptides(float dt);
+    void updatePeptideReading(float dt);
+    void updateEnergyRays(float dt);
+    void cullExpired();
+
+    PrimitiveParticle* find(std::uint32_t id) noexcept;
+    const PrimitiveParticle* find(std::uint32_t id) const noexcept;
+    bool wouldCreateRnaCycle(std::uint32_t leftId, std::uint32_t rightId) const noexcept;
+    static float distanceSquared(const PrimitiveParticle& a, const PrimitiveParticle& b) noexcept;
+};
