@@ -35,6 +35,8 @@ add_executable(Cladia
     src/PhysicsField.h
     src/AbiogenesisSystem.cpp
     src/AbiogenesisSystem.h
+    src/ProtocellLifecycle.cpp
+    src/ProtocellLifecycle.h
 )
 
 target_link_libraries(Cladia PRIVATE SDL3::SDL3 SDL3_ttf::SDL3_ttf)
