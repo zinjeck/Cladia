@@ -4,6 +4,7 @@
 #include "AquaticWorld.h"
 #include "CellSystem.h"
 #include "SimulationClock.h"
+#include "SpeciesRegistry.h"
 
 #include <algorithm>
 #include <chrono>
@@ -11,6 +12,7 @@
 #include <cstdint>
 #include <iomanip>
 #include <iostream>
+#include <numbers>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -21,7 +23,8 @@ namespace
     {
         MainMenu,
         Game,
-        CellEditor
+        CellEditor,
+        SpeciesLibrary
     };
 
     struct Button
@@ -60,7 +63,7 @@ namespace
         SDL_Texture* texture = SDL_CreateTextureFromSurface(renderer, surface);
         if (texture != nullptr)
         {
-            SDL_SetTextureScaleMode(texture, SDL_SCALEMODE_NEAREST);
+            SDL_SetTextureScaleMode(texture, SDL_SCALEMODE_LINEAR);
             SDL_FRect destination{x, y, static_cast<float>(surface->w), static_cast<float>(surface->h)};
             SDL_RenderTexture(renderer, texture, nullptr, &destination);
             SDL_DestroyTexture(texture);
@@ -105,7 +108,6 @@ namespace
 
         SDL_SetRenderDrawColor(renderer, fill.r, fill.g, fill.b, fill.a);
         SDL_RenderFillRect(renderer, &button.rect);
-
         SDL_SetRenderDrawColor(renderer, 72, 126, 143, 255);
         SDL_RenderRect(renderer, &button.rect);
 
@@ -129,15 +131,14 @@ namespace
 
     void changeZoom(Camera& camera, float factor, float mouseX, float mouseY, int width, int height)
     {
-        if (width <= 0 || height <= 0)
+        if (width <= 0 || height <= 58)
         {
             return;
         }
 
-        const float oldZoom = camera.zoom;
-        const float oldView = 1.0f / oldZoom;
+        const float oldView = 1.0f / camera.zoom;
         const float u = std::clamp(mouseX / static_cast<float>(width), 0.0f, 1.0f);
-        const float v = std::clamp(mouseY / static_cast<float>(height), 0.0f, 1.0f);
+        const float v = std::clamp((mouseY - 58.0f) / static_cast<float>(height - 58), 0.0f, 1.0f);
         const float worldX = camera.centerX + (u - 0.5f) * oldView;
         const float worldY = camera.centerY + (v - 0.5f) * oldView;
 
@@ -162,7 +163,7 @@ namespace
         constexpr float edge = 14.0f;
         if (mouseX <= edge) dx -= 1.0f;
         if (mouseX >= static_cast<float>(width) - edge) dx += 1.0f;
-        if (mouseY <= 58.0f + edge && mouseY >= 58.0f) dy -= 1.0f;
+        if (mouseY >= 58.0f && mouseY <= 58.0f + edge) dy -= 1.0f;
         if (mouseY >= static_cast<float>(height) - edge) dy += 1.0f;
 
         if (dx == 0.0f && dy == 0.0f)
@@ -177,58 +178,82 @@ namespace
         clampCamera(camera);
     }
 
-    void renderPixelWater(SDL_Renderer* renderer, const AquaticWorld& world, const Camera& camera, int width, int height)
-    {
-        SDL_SetRenderDrawColor(renderer, 8, 29, 43, 255);
-        SDL_RenderClear(renderer);
-
-        constexpr int pixelSize = 10;
-        const auto& definition = world.definition();
-        const float view = 1.0f / camera.zoom;
-        const float left = camera.centerX - view * 0.5f;
-        const float top = camera.centerY - view * 0.5f;
-
-        for (int sy = 58; sy < height; sy += pixelSize)
-        {
-            for (int sx = 0; sx < width; sx += pixelSize)
-            {
-                const float u = static_cast<float>(sx) / static_cast<float>(std::max(width, 1));
-                const float v = static_cast<float>(sy - 58) / static_cast<float>(std::max(height - 58, 1));
-                const float nx = left + u * view;
-                const float ny = top + v * view;
-                const int wx = static_cast<int>(nx * static_cast<float>(definition.logicalWidth));
-                const int wy = static_cast<int>(ny * static_cast<float>(definition.logicalHeight));
-                const float variation = world.waterVariationAt(wx, wy);
-
-                const Uint8 r = static_cast<Uint8>(11 + variation * 10.0f);
-                const Uint8 g = static_cast<Uint8>(45 + variation * 28.0f);
-                const Uint8 b = static_cast<Uint8>(63 + variation * 35.0f);
-                SDL_SetRenderDrawColor(renderer, r, g, b, 255);
-
-                SDL_FRect pixel{
-                    static_cast<float>(sx),
-                    static_cast<float>(sy),
-                    static_cast<float>(pixelSize + 1),
-                    static_cast<float>(pixelSize + 1)};
-                SDL_RenderFillRect(renderer, &pixel);
-            }
-        }
-    }
-
-    SDL_FPoint cellScreenPosition(const Cell& cell, const Camera& camera, int width, int height)
+    SDL_FPoint worldToScreen(float x, float y, const Camera& camera, int width, int height)
     {
         const float view = 1.0f / camera.zoom;
         const float left = camera.centerX - view * 0.5f;
         const float top = camera.centerY - view * 0.5f;
         return SDL_FPoint{
-            ((cell.x - left) / view) * static_cast<float>(width),
-            58.0f + ((cell.y - top) / view) * static_cast<float>(height - 58)};
+            ((x - left) / view) * static_cast<float>(width),
+            58.0f + ((y - top) / view) * static_cast<float>(height - 58)};
+    }
+
+    SDL_FPoint screenToWorld(float x, float y, const Camera& camera, int width, int height)
+    {
+        const float view = 1.0f / camera.zoom;
+        const float left = camera.centerX - view * 0.5f;
+        const float top = camera.centerY - view * 0.5f;
+        const float u = std::clamp(x / static_cast<float>(std::max(width, 1)), 0.0f, 1.0f);
+        const float v = std::clamp((y - 58.0f) / static_cast<float>(std::max(height - 58, 1)), 0.0f, 1.0f);
+        return SDL_FPoint{left + u * view, top + v * view};
+    }
+
+    void renderSmoothWater(SDL_Renderer* renderer, const AquaticWorld& world, const Camera& camera, int width, int height)
+    {
+        SDL_SetRenderDrawColor(renderer, 10, 35, 48, 255);
+        SDL_RenderClear(renderer);
+
+        constexpr int sampleSize = 4;
+        const auto& definition = world.definition();
+        const float view = 1.0f / camera.zoom;
+        const float left = camera.centerX - view * 0.5f;
+        const float top = camera.centerY - view * 0.5f;
+
+        for (int sy = 58; sy < height; sy += sampleSize)
+        {
+            for (int sx = 0; sx < width; sx += sampleSize)
+            {
+                const float u = static_cast<float>(sx) / static_cast<float>(std::max(width, 1));
+                const float v = static_cast<float>(sy - 58) / static_cast<float>(std::max(height - 58, 1));
+                const int wx = static_cast<int>((left + u * view) * static_cast<float>(definition.logicalWidth));
+                const int wy = static_cast<int>((top + v * view) * static_cast<float>(definition.logicalHeight));
+                const float variation = world.waterVariationAt(wx, wy);
+
+                const Uint8 r = static_cast<Uint8>(10 + variation * 7.0f);
+                const Uint8 g = static_cast<Uint8>(42 + variation * 15.0f);
+                const Uint8 b = static_cast<Uint8>(58 + variation * 19.0f);
+                SDL_SetRenderDrawColor(renderer, r, g, b, 255);
+
+                SDL_FRect sample{
+                    static_cast<float>(sx), static_cast<float>(sy),
+                    static_cast<float>(sampleSize + 1), static_cast<float>(sampleSize + 1)};
+                SDL_RenderFillRect(renderer, &sample);
+            }
+        }
+    }
+
+    void drawHollowCircle(SDL_Renderer* renderer, float centerX, float centerY, float radius, SDL_Color color)
+    {
+        SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+        constexpr int segments = 28;
+        float lastX = centerX + radius;
+        float lastY = centerY;
+
+        for (int i = 1; i <= segments; ++i)
+        {
+            const float angle = (static_cast<float>(i) / static_cast<float>(segments)) * 2.0f * std::numbers::pi_v<float>;
+            const float x = centerX + std::cos(angle) * radius;
+            const float y = centerY + std::sin(angle) * radius;
+            SDL_RenderLine(renderer, lastX, lastY, x, y);
+            lastX = x;
+            lastY = y;
+        }
     }
 
     void drawCell(SDL_Renderer* renderer, const Cell& cell, const Camera& camera, int width, int height, bool selected)
     {
-        const SDL_FPoint position = cellScreenPosition(cell, camera, width, height);
-        const float radius = std::max(6.0f, cell.radius * static_cast<float>(width) * camera.zoom);
+        const SDL_FPoint position = worldToScreen(cell.x, cell.y, camera, width, height);
+        const float radius = std::max(7.0f, cell.radius * static_cast<float>(width) * camera.zoom);
 
         if (position.x < -radius || position.x > static_cast<float>(width) + radius ||
             position.y < 58.0f - radius || position.y > static_cast<float>(height) + radius)
@@ -236,27 +261,14 @@ namespace
             return;
         }
 
-        const float snappedX = std::floor(position.x / 2.0f) * 2.0f;
-        const float snappedY = std::floor(position.y / 2.0f) * 2.0f;
-        const float size = std::floor(radius * 2.0f / 2.0f) * 2.0f;
+        const SDL_Color membrane = selected
+            ? SDL_Color{231, 244, 202, 255}
+            : SDL_Color{139, 212, 198, 255};
 
-        SDL_FRect shadow{snappedX - size * 0.5f + 3.0f, snappedY - size * 0.5f + 3.0f, size, size};
-        SDL_SetRenderDrawColor(renderer, 4, 20, 28, 180);
-        SDL_RenderFillRect(renderer, &shadow);
-
-        SDL_FRect body{snappedX - size * 0.5f, snappedY - size * 0.5f, size, size};
-        SDL_SetRenderDrawColor(renderer, 115, 205, 181, 255);
-        SDL_RenderFillRect(renderer, &body);
-
-        SDL_FRect core{body.x + size * 0.28f, body.y + size * 0.28f, size * 0.44f, size * 0.44f};
-        SDL_SetRenderDrawColor(renderer, 53, 130, 122, 255);
-        SDL_RenderFillRect(renderer, &core);
-
+        drawHollowCircle(renderer, position.x, position.y, radius, membrane);
         if (selected)
         {
-            SDL_FRect outline{body.x - 3.0f, body.y - 3.0f, body.w + 6.0f, body.h + 6.0f};
-            SDL_SetRenderDrawColor(renderer, 235, 244, 197, 255);
-            SDL_RenderRect(renderer, &outline);
+            drawHollowCircle(renderer, position.x, position.y, radius + 3.0f, SDL_Color{74, 138, 143, 220});
         }
     }
 
@@ -269,54 +281,58 @@ namespace
         return stream.str();
     }
 
-    void renderMainMenu(SDL_Renderer* renderer, int width, int height, float mouseX, float mouseY, Button& playButton, Button& editorButton)
+    void renderMainMenu(
+        SDL_Renderer* renderer,
+        int width,
+        int height,
+        float mouseX,
+        float mouseY,
+        Button& playButton,
+        Button& editorButton,
+        Button& libraryButton)
     {
-        SDL_SetRenderDrawColor(renderer, 7, 20, 30, 255);
+        SDL_SetRenderDrawColor(renderer, 8, 25, 35, 255);
         SDL_RenderClear(renderer);
 
-        constexpr int block = 16;
-        for (int y = 0; y < height; y += block)
+        for (int y = 0; y < height; y += 8)
         {
-            for (int x = 0; x < width; x += block)
-            {
-                const int band = ((x / block) * 3 + (y / block) * 5) % 11;
-                SDL_SetRenderDrawColor(renderer, 8, static_cast<Uint8>(28 + band), static_cast<Uint8>(42 + band * 2), 255);
-                SDL_FRect rect{static_cast<float>(x), static_cast<float>(y), static_cast<float>(block), static_cast<float>(block)};
-                SDL_RenderFillRect(renderer, &rect);
-            }
+            const float t = static_cast<float>(y) / static_cast<float>(std::max(height, 1));
+            const Uint8 g = static_cast<Uint8>(30 + t * 18.0f);
+            const Uint8 b = static_cast<Uint8>(42 + t * 24.0f);
+            SDL_SetRenderDrawColor(renderer, 8, g, b, 255);
+            SDL_FRect band{0.0f, static_cast<float>(y), static_cast<float>(width), 9.0f};
+            SDL_RenderFillRect(renderer, &band);
         }
 
         const float titleSize = width < 900 ? 60.0f : 78.0f;
         const float titleX = (static_cast<float>(width) - textWidth("CLADIA", titleSize)) * 0.5f;
-        drawText(renderer, "CLADIA", titleX, static_cast<float>(height) * 0.20f, titleSize, SDL_Color{221, 241, 237, 255});
+        drawText(renderer, "CLADIA", titleX, static_cast<float>(height) * 0.18f, titleSize, SDL_Color{221, 241, 237, 255});
 
-        const float subtitleSize = 18.0f;
+        constexpr float subtitleSize = 18.0f;
         const std::string_view subtitle = "CELLULAR EVOLUTION SIMULATION";
-        drawText(
-            renderer,
-            subtitle,
+        drawText(renderer, subtitle,
             (static_cast<float>(width) - textWidth(subtitle, subtitleSize)) * 0.5f,
-            static_cast<float>(height) * 0.34f,
+            static_cast<float>(height) * 0.32f,
             subtitleSize,
             SDL_Color{126, 171, 176, 255});
 
-        playButton = Button{SDL_FRect{(static_cast<float>(width) - 250.0f) * 0.5f, static_cast<float>(height) * 0.52f, 250.0f, 54.0f}, "PLAY"};
-        editorButton = Button{SDL_FRect{playButton.rect.x, playButton.rect.y + 68.0f, 250.0f, 48.0f}, "CELL EDITOR"};
+        const float x = (static_cast<float>(width) - 260.0f) * 0.5f;
+        playButton = Button{SDL_FRect{x, static_cast<float>(height) * 0.48f, 260.0f, 54.0f}, "PLAY"};
+        editorButton = Button{SDL_FRect{x, playButton.rect.y + 66.0f, 260.0f, 48.0f}, "CELL EDITOR"};
+        libraryButton = Button{SDL_FRect{x, editorButton.rect.y + 60.0f, 260.0f, 48.0f}, "SPECIES LIBRARY"};
+
         drawButton(renderer, playButton, mouseX, mouseY);
         drawButton(renderer, editorButton, mouseX, mouseY);
+        drawButton(renderer, libraryButton, mouseX, mouseY);
     }
 
     void renderCellEditor(SDL_Renderer* renderer, int width, int height)
     {
         SDL_SetRenderDrawColor(renderer, 8, 23, 32, 255);
         SDL_RenderClear(renderer);
+        drawText(renderer, "CELL EDITOR", 22.0f, 18.0f, 28.0f, SDL_Color{224, 239, 237, 255});
 
-        SDL_FRect top{0.0f, 0.0f, static_cast<float>(width), 58.0f};
-        SDL_SetRenderDrawColor(renderer, 11, 31, 41, 255);
-        SDL_RenderFillRect(renderer, &top);
-        drawText(renderer, "CELL EDITOR", 18.0f, 14.0f, 24.0f, SDL_Color{224, 239, 237, 255});
-
-        SDL_FRect canvas{32.0f, 90.0f, static_cast<float>(width) * 0.66f, static_cast<float>(height) - 126.0f};
+        SDL_FRect canvas{32.0f, 78.0f, static_cast<float>(width) * 0.66f, static_cast<float>(height) - 118.0f};
         SDL_SetRenderDrawColor(renderer, 13, 38, 49, 255);
         SDL_RenderFillRect(renderer, &canvas);
         SDL_SetRenderDrawColor(renderer, 43, 88, 99, 255);
@@ -328,20 +344,97 @@ namespace
         drawText(renderer, "ESC  BACK", 18.0f, static_cast<float>(height) - 34.0f, 14.0f, SDL_Color{105, 145, 148, 255});
     }
 
-    void renderInspector(SDL_Renderer* renderer, const Cell& cell, int width, int height)
+    void renderSpeciesLibrary(SDL_Renderer* renderer, const SpeciesRegistry& speciesRegistry, int width, int height)
     {
-        const float panelWidth = std::min(270.0f, static_cast<float>(width) * 0.28f);
-        SDL_FRect panel{static_cast<float>(width) - panelWidth - 14.0f, 72.0f, panelWidth, 174.0f};
-        SDL_SetRenderDrawColor(renderer, 10, 29, 38, 238);
+        SDL_SetRenderDrawColor(renderer, 8, 23, 32, 255);
+        SDL_RenderClear(renderer);
+        drawText(renderer, "SPECIES LIBRARY", 28.0f, 24.0f, 32.0f, SDL_Color{224, 239, 237, 255});
+        drawText(renderer, "SPECIES GENERATED THROUGH SPECIATION WILL APPEAR HERE", 30.0f, 78.0f, 16.0f, SDL_Color{121, 161, 164, 255});
+
+        const auto generated = speciesRegistry.generated();
+        if (generated.empty())
+        {
+            SDL_FRect emptyPanel{30.0f, 126.0f, std::min(620.0f, static_cast<float>(width) - 60.0f), 100.0f};
+            SDL_SetRenderDrawColor(renderer, 12, 37, 47, 255);
+            SDL_RenderFillRect(renderer, &emptyPanel);
+            SDL_SetRenderDrawColor(renderer, 42, 84, 94, 255);
+            SDL_RenderRect(renderer, &emptyPanel);
+            drawText(renderer, "NO GENERATED SPECIES YET", emptyPanel.x + 22.0f, emptyPanel.y + 24.0f, 21.0f, SDL_Color{184, 211, 207, 255});
+            drawText(renderer, "CLADIA IS THE STARTER SPECIES, NOT A GENERATED SPECIES.", emptyPanel.x + 22.0f, emptyPanel.y + 58.0f, 14.0f, SDL_Color{104, 148, 151, 255});
+        }
+        else
+        {
+            float y = 126.0f;
+            for (const SpeciesDefinition* species : generated)
+            {
+                drawText(renderer, species->scientificName, 32.0f, y, 20.0f, SDL_Color{203, 226, 220, 255});
+                y += 32.0f;
+            }
+        }
+
+        drawText(renderer, "ESC  BACK", 18.0f, static_cast<float>(height) - 34.0f, 14.0f, SDL_Color{105, 145, 148, 255});
+    }
+
+    void renderCellTooltip(
+        SDL_Renderer* renderer,
+        const Cell& cell,
+        const SpeciesRegistry& speciesRegistry,
+        const Camera& camera,
+        int width,
+        int height)
+    {
+        const SpeciesDefinition* species = speciesRegistry.find(cell.speciesId);
+        if (species == nullptr)
+        {
+            return;
+        }
+
+        const SDL_FPoint cellPosition = worldToScreen(cell.x, cell.y, camera, width, height);
+        constexpr float panelWidth = 300.0f;
+        constexpr float panelHeight = 206.0f;
+        float x = cellPosition.x + 18.0f;
+        float y = cellPosition.y + 18.0f;
+        x = std::clamp(x, 10.0f, std::max(10.0f, static_cast<float>(width) - panelWidth - 10.0f));
+        y = std::clamp(y, 68.0f, std::max(68.0f, static_cast<float>(height) - panelHeight - 10.0f));
+
+        SDL_FRect panel{x, y, panelWidth, panelHeight};
+        SDL_SetRenderDrawColor(renderer, 9, 28, 37, 244);
         SDL_RenderFillRect(renderer, &panel);
-        SDL_SetRenderDrawColor(renderer, 48, 102, 113, 255);
+        SDL_SetRenderDrawColor(renderer, 61, 113, 121, 255);
         SDL_RenderRect(renderer, &panel);
 
-        drawText(renderer, "CELL", panel.x + 16.0f, panel.y + 14.0f, 22.0f, SDL_Color{222, 239, 235, 255});
-        drawText(renderer, "ID " + std::to_string(cell.id), panel.x + 16.0f, panel.y + 48.0f, 16.0f, SDL_Color{147, 184, 182, 255});
-        drawText(renderer, "COMPONENTS", panel.x + 16.0f, panel.y + 82.0f, 16.0f, SDL_Color{192, 213, 209, 255});
-        drawText(renderer, "NONE YET", panel.x + 16.0f, panel.y + 108.0f, 15.0f, SDL_Color{108, 148, 149, 255});
-        drawText(renderer, "AUTONOMOUS ONLY", panel.x + 16.0f, panel.y + 139.0f, 13.0f, SDL_Color{111, 165, 156, 255});
+        drawText(renderer, species->commonName, x + 14.0f, y + 12.0f, 22.0f, SDL_Color{226, 240, 236, 255});
+        drawText(renderer, species->scientificName, x + 14.0f, y + 42.0f, 16.0f, SDL_Color{151, 194, 188, 255});
+        drawText(renderer, "CELL ID  " + std::to_string(cell.id), x + 14.0f, y + 74.0f, 14.0f, SDL_Color{133, 169, 168, 255});
+        drawText(renderer, "DNA  " + cell.dna, x + 14.0f, y + 98.0f, 14.0f, SDL_Color{178, 204, 200, 255});
+        drawText(renderer, "COMPONENTS  NONE", x + 14.0f, y + 124.0f, 14.0f, SDL_Color{128, 165, 165, 255});
+        drawText(renderer, "STATUS  INERT", x + 14.0f, y + 150.0f, 14.0f, SDL_Color{128, 165, 165, 255});
+        drawText(renderer, "CONTROL  GENES + ENVIRONMENT ONLY", x + 14.0f, y + 176.0f, 12.0f, SDL_Color{104, 151, 150, 255});
+    }
+
+    void renderSpawnPanel(
+        SDL_Renderer* renderer,
+        float mouseX,
+        float mouseY,
+        bool dropdownOpen,
+        Button& dropdownButton,
+        Button& cladiaOptionButton)
+    {
+        SDL_FRect panel{14.0f, 66.0f, 250.0f, dropdownOpen ? 132.0f : 86.0f};
+        SDL_SetRenderDrawColor(renderer, 9, 28, 37, 246);
+        SDL_RenderFillRect(renderer, &panel);
+        SDL_SetRenderDrawColor(renderer, 58, 108, 119, 255);
+        SDL_RenderRect(renderer, &panel);
+
+        drawText(renderer, "SPAWN SPECIES", panel.x + 14.0f, panel.y + 10.0f, 16.0f, SDL_Color{203, 226, 221, 255});
+        dropdownButton = Button{SDL_FRect{panel.x + 12.0f, panel.y + 38.0f, panel.w - 24.0f, 34.0f}, "SELECT SPECIES"};
+        drawButton(renderer, dropdownButton, mouseX, mouseY, dropdownOpen);
+
+        if (dropdownOpen)
+        {
+            cladiaOptionButton = Button{SDL_FRect{panel.x + 12.0f, panel.y + 78.0f, panel.w - 24.0f, 34.0f}, "CLADIA"};
+            drawButton(renderer, cladiaOptionButton, mouseX, mouseY);
+        }
     }
 }
 
@@ -363,7 +456,6 @@ int main()
     SDL_Window* window = SDL_CreateWindow("Cladia", 1280, 720, SDL_WINDOW_RESIZABLE);
     if (window == nullptr)
     {
-        std::cerr << "SDL_CreateWindow failed: " << SDL_GetError() << '\n';
         TTF_Quit();
         SDL_Quit();
         return 1;
@@ -372,7 +464,6 @@ int main()
     SDL_Renderer* renderer = SDL_CreateRenderer(window, nullptr);
     if (renderer == nullptr)
     {
-        std::cerr << "SDL_CreateRenderer failed: " << SDL_GetError() << '\n';
         SDL_DestroyWindow(window);
         TTF_Quit();
         SDL_Quit();
@@ -385,7 +476,6 @@ int main()
     uiFont = TTF_OpenFont("Arimo-Regular.ttf", 24.0f);
     if (uiFont == nullptr)
     {
-        std::cerr << "TTF_OpenFont failed: " << SDL_GetError() << '\n';
         SDL_DestroyRenderer(renderer);
         SDL_DestroyWindow(window);
         TTF_Quit();
@@ -396,14 +486,23 @@ int main()
     bool running = true;
     Screen screen = Screen::MainMenu;
     AquaticWorld world = AquaticWorld::createDefault();
+    SpeciesRegistry speciesRegistry;
     CellSystem cells;
     SimulationClock clock;
     Camera camera;
+
     std::uint32_t selectedCellId = 0;
+    bool spawnPanelOpen = false;
+    bool speciesDropdownOpen = false;
+    bool placementMode = false;
+    SpeciesId placementSpecies = 0;
 
     Button playButton;
     Button editorButton;
+    Button libraryButton;
     Button spawnButton;
+    Button dropdownButton;
+    Button cladiaOptionButton;
     Button pauseButton;
     Button speed1Button;
     Button speed2Button;
@@ -452,6 +551,21 @@ int main()
                 {
                     screen = Screen::MainMenu;
                     selectedCellId = 0;
+                    placementMode = false;
+                    spawnPanelOpen = false;
+                    speciesDropdownOpen = false;
+                }
+                continue;
+            }
+
+            if (screen == Screen::Game && event.type == SDL_EVENT_MOUSE_BUTTON_DOWN && event.button.button == SDL_BUTTON_RIGHT)
+            {
+                if (placementMode)
+                {
+                    placementMode = false;
+                    placementSpecies = 0;
+                    spawnPanelOpen = false;
+                    speciesDropdownOpen = false;
                 }
                 continue;
             }
@@ -492,11 +606,18 @@ int main()
                     clock = SimulationClock{};
                     camera = Camera{};
                     selectedCellId = 0;
+                    spawnPanelOpen = false;
+                    speciesDropdownOpen = false;
+                    placementMode = false;
                     screen = Screen::Game;
                 }
                 else if (pointInside(editorButton.rect, event.button.x, event.button.y))
                 {
                     screen = Screen::CellEditor;
+                }
+                else if (pointInside(libraryButton.rect, event.button.x, event.button.y))
+                {
+                    screen = Screen::SpeciesLibrary;
                 }
                 continue;
             }
@@ -508,9 +629,27 @@ int main()
 
             if (pointInside(spawnButton.rect, event.button.x, event.button.y))
             {
-                selectedCellId = cells.spawnCell(camera.centerX, camera.centerY);
+                spawnPanelOpen = !spawnPanelOpen;
+                speciesDropdownOpen = false;
                 continue;
             }
+
+            if (spawnPanelOpen && pointInside(dropdownButton.rect, event.button.x, event.button.y))
+            {
+                speciesDropdownOpen = !speciesDropdownOpen;
+                continue;
+            }
+
+            if (spawnPanelOpen && speciesDropdownOpen && pointInside(cladiaOptionButton.rect, event.button.x, event.button.y))
+            {
+                placementSpecies = SpeciesRegistry::CladiaId;
+                placementMode = true;
+                spawnPanelOpen = false;
+                speciesDropdownOpen = false;
+                selectedCellId = 0;
+                continue;
+            }
+
             if (pointInside(pauseButton.rect, event.button.x, event.button.y))
             {
                 clock.togglePaused();
@@ -546,11 +685,18 @@ int main()
                 continue;
             }
 
+            if (placementMode && placementSpecies != 0)
+            {
+                const SDL_FPoint worldPoint = screenToWorld(event.button.x, event.button.y, camera, width, height);
+                cells.spawnCell(placementSpecies, worldPoint.x, worldPoint.y);
+                continue;
+            }
+
             std::uint32_t closestId = 0;
             float closestDistance = 1.0e9f;
             for (const Cell& cell : cells.cells())
             {
-                const SDL_FPoint position = cellScreenPosition(cell, camera, width, height);
+                const SDL_FPoint position = worldToScreen(cell.x, cell.y, camera, width, height);
                 const float dx = position.x - event.button.x;
                 const float dy = position.y - event.button.y;
                 const float distance = std::sqrt(dx * dx + dy * dy);
@@ -566,19 +712,29 @@ int main()
 
         if (screen == Screen::MainMenu)
         {
-            renderMainMenu(renderer, width, height, mouseX, mouseY, playButton, editorButton);
+            renderMainMenu(renderer, width, height, mouseX, mouseY, playButton, editorButton, libraryButton);
         }
         else if (screen == Screen::CellEditor)
         {
             renderCellEditor(renderer, width, height);
         }
+        else if (screen == Screen::SpeciesLibrary)
+        {
+            renderSpeciesLibrary(renderer, speciesRegistry, width, height);
+        }
         else
         {
-            renderPixelWater(renderer, world, camera, width, height);
+            renderSmoothWater(renderer, world, camera, width, height);
 
             for (const Cell& cell : cells.cells())
             {
                 drawCell(renderer, cell, camera, width, height, cell.id == selectedCellId);
+            }
+
+            if (placementMode && placementSpecies != 0 && mouseY >= 58.0f)
+            {
+                drawHollowCircle(renderer, mouseX, mouseY, 13.0f, SDL_Color{213, 235, 207, 185});
+                drawText(renderer, "LEFT CLICK TO PLACE   RIGHT CLICK TO CANCEL", 14.0f, 68.0f, 14.0f, SDL_Color{201, 224, 218, 255});
             }
 
             SDL_FRect topBar{0.0f, 0.0f, static_cast<float>(width), 58.0f};
@@ -595,7 +751,7 @@ int main()
             speed4Button = Button{SDL_FRect{static_cast<float>(width) - 150.0f, 10.0f, 54.0f, 38.0f}, "4X"};
             speed8Button = Button{SDL_FRect{static_cast<float>(width) - 90.0f, 10.0f, 54.0f, 38.0f}, "8X"};
 
-            drawButton(renderer, spawnButton, mouseX, mouseY);
+            drawButton(renderer, spawnButton, mouseX, mouseY, spawnPanelOpen || placementMode);
             drawButton(renderer, pauseButton, mouseX, mouseY, clock.paused());
             drawButton(renderer, speed1Button, mouseX, mouseY, !clock.paused() && std::abs(clock.speed() - 1.0f) < 0.01f);
             drawButton(renderer, speed2Button, mouseX, mouseY, !clock.paused() && std::abs(clock.speed() - 2.0f) < 0.01f);
@@ -604,13 +760,16 @@ int main()
 
             const std::string time = clockText(clock);
             drawText(renderer, time, 162.0f, 16.0f, 18.0f, SDL_Color{187, 215, 213, 255});
+            drawText(renderer, "CELLS " + std::to_string(cells.cells().size()), 300.0f, 17.0f, 15.0f, SDL_Color{103, 156, 158, 255});
 
-            const std::string countText = "CELLS " + std::to_string(cells.cells().size());
-            drawText(renderer, countText, 300.0f, 17.0f, 15.0f, SDL_Color{103, 156, 158, 255});
+            if (spawnPanelOpen)
+            {
+                renderSpawnPanel(renderer, mouseX, mouseY, speciesDropdownOpen, dropdownButton, cladiaOptionButton);
+            }
 
             if (const Cell* selected = cells.findById(selectedCellId))
             {
-                renderInspector(renderer, *selected, width, height);
+                renderCellTooltip(renderer, *selected, speciesRegistry, camera, width, height);
             }
         }
 

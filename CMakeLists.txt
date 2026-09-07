@@ -33,6 +33,8 @@ add_executable(Cladia
     src/SimulationClock.h
     src/CellSystem.cpp
     src/CellSystem.h
+    src/SpeciesRegistry.cpp
+    src/SpeciesRegistry.h
 )
 
 target_link_libraries(Cladia PRIVATE SDL3::SDL3 SDL3_ttf::SDL3_ttf)

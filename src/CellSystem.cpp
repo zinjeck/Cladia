@@ -1,6 +1,7 @@
 #include "CellSystem.h"
 
 #include <algorithm>
+#include <sstream>
 
 void CellSystem::clear() noexcept
 {
@@ -8,14 +9,20 @@ void CellSystem::clear() noexcept
     nextId_ = 1;
 }
 
-std::uint32_t CellSystem::spawnCell(float x, float y)
+std::uint32_t CellSystem::spawnCell(SpeciesId speciesId, float x, float y)
 {
     Cell cell;
     cell.id = nextId_++;
+    cell.speciesId = speciesId;
     cell.x = std::clamp(x, 0.03f, 0.97f);
     cell.y = std::clamp(y, 0.08f, 0.97f);
     cell.radius = 0.018f;
     cell.controlPolicy = OrganismControlPolicy::GenesAndEnvironmentOnly;
+
+    std::ostringstream dna;
+    dna << "CLD-" << speciesId << '-' << cell.id << " / UNSEQUENCED";
+    cell.dna = dna.str();
+
     cells_.push_back(cell);
     return cell.id;
 }
