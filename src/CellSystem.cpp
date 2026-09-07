@@ -9,22 +9,17 @@ void CellSystem::seedPlaceholderOceanCells(std::uint32_t seed, std::size_t count
     cells_.reserve(count);
 
     std::mt19937 rng(seed ^ 0xC3115EEDu);
-    std::uniform_real_distribution<float> yDistribution(0.08f, 0.92f);
-    std::uniform_real_distribution<float> edgeDistribution(0.035f, 0.17f);
-    std::uniform_real_distribution<float> jitter(-0.012f, 0.012f);
-    std::uniform_real_distribution<float> radiusDistribution(0.000055f, 0.00011f);
+    std::uniform_real_distribution<float> positionDistribution(0.04f, 0.96f);
+    std::uniform_real_distribution<float> radiusDistribution(0.008f, 0.016f);
 
     for (std::size_t index = 0; index < count; ++index)
     {
-        const bool leftOcean = (index % 2u) == 0u;
-        const float edge = edgeDistribution(rng);
-
         Cell cell;
         cell.id = static_cast<std::uint32_t>(index + 1u);
-        cell.x = std::clamp(leftOcean ? edge : 1.0f - edge, 0.01f, 0.99f);
-        cell.y = std::clamp(yDistribution(rng) + jitter(rng), 0.02f, 0.98f);
+        cell.x = positionDistribution(rng);
+        cell.y = positionDistribution(rng);
         cell.radius = radiusDistribution(rng);
-        // No biological components are created in this pass.
+        // No biological components are created yet.
         cells_.push_back(cell);
     }
 }
