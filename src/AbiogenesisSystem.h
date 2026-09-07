@@ -40,6 +40,7 @@ struct PrimitiveParticle
     // Lipid state.
     std::vector<std::uint32_t> lipidLinks;
     bool inClosedLipidLoop = false;
+    bool stableMembrane = false;
     float stabilizedByRna = 0.0f;
     float membraneStress = 0.0f;
 
