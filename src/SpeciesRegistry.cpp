@@ -1,6 +1,7 @@
 #include "SpeciesRegistry.h"
 
 #include <array>
+#include <utility>
 
 SpeciesRegistry::SpeciesRegistry()
 {
