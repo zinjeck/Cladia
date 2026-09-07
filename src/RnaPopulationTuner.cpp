@@ -1,6 +1,7 @@
 #include "RnaPopulationTuner.h"
 
 #include "AbiogenesisSystem.h"
+#include "EntityBudgetSystem.h"
 
 #include <algorithm>
 #include <cmath>
@@ -15,17 +16,12 @@ void RnaPopulationTuner::update(AbiogenesisSystem& system)
         if (p.ageSeconds > 0.55f || p.body.y < 0.88f) return false;
         if (p.frontLink != 0 || p.backLink != 0 || p.templatePartnerId != 0 || p.replicaTripletId != 0) return false;
 
-        // ProtocellLifecycle already keeps only ~1/5 of fresh vent RNA.
-        // Keep only one third of those survivors here, giving an effective
-        // fresh-vent survival rate of roughly 1/15 without touching replicated RNA.
         const std::uint32_t ventOrdinal = p.id / 5u;
         if ((ventOrdinal % 3u) != 0u)
         {
             return true;
         }
 
-        // A high stop-codon share keeps spontaneous chains short. This changes
-        // only fresh vent material; replicated triplets preserve their copied code.
         if (((ventOrdinal / 3u) % 2u) == 0u)
         {
             p.triplet = "UAA";
@@ -35,16 +31,11 @@ void RnaPopulationTuner::update(AbiogenesisSystem& system)
         return false;
     });
 
-    // ATP is intentionally much sparser than before for performance. Only tune
-    // brand-new ATP so particles already travelling through the world or being
-    // consumed by peptides are not disturbed.
     std::erase_if(particles, [](PrimitiveParticle& p)
     {
         if (p.kind != PrimitiveKind::Atp) return false;
         if (p.ageSeconds > 0.45f || p.lifetimeSeconds < 0.0f) return false;
 
-        // Keep roughly one out of every six fresh ATP particles. This sharply
-        // reduces the active entity count while retaining a steady energy supply.
         if ((p.id % 6u) != 0u)
         {
             return true;
@@ -55,21 +46,41 @@ void RnaPopulationTuner::update(AbiogenesisSystem& system)
 
         if (fromVent)
         {
-            // Survivors fan out rapidly instead of rising in a narrow plume.
             p.body.vx = std::sin(id * 1.731f) * 0.20f
                       + std::cos(id * 0.617f) * 0.055f;
             p.body.vy = -0.115f - std::abs(std::cos(id * 1.113f)) * 0.095f;
         }
         else
         {
-            // Surface-created ATP also spreads laterally so a smaller population
-            // can cover more of the upper water column.
             p.body.vx = std::sin(id * 2.173f) * 0.17f;
             p.body.vy = 0.055f + std::abs(std::cos(id * 0.913f)) * 0.065f;
         }
 
-        // Faster travel lets us shorten persistence as another performance guard.
         p.lifetimeSeconds = std::min(p.lifetimeSeconds, 8.0f);
         return false;
     });
+
+    // Water drag is allowed to shape ATP motion, but ATP may not stall. A
+    // deterministic minimum cruise speed lets each survivor cross the map
+    // during its short lifetime instead of stopping halfway.
+    for (PrimitiveParticle& p : particles)
+    {
+        if (p.kind != PrimitiveKind::Atp || p.lifetimeSeconds < 0.0f) continue;
+
+        const float id = static_cast<float>(p.id);
+        const float minimumCruise = 0.145f + std::abs(std::sin(id * 0.413f)) * 0.035f;
+        if (std::abs(p.body.vx) < minimumCruise)
+        {
+            float direction = 0.0f;
+            if (std::abs(p.body.vx) > 0.004f)
+                direction = p.body.vx > 0.0f ? 1.0f : -1.0f;
+            else
+                direction = (p.id & 1u) == 0u ? 1.0f : -1.0f;
+            p.body.vx = direction * minimumCruise;
+        }
+    }
+
+    // The budget runs every frame after the fresh-material tuning above. This
+    // gives the simulation a hard population ceiling even if vents emit a burst.
+    EntityBudgetSystem{}.update(system);
 }

@@ -41,6 +41,8 @@ add_executable(Cladia
     src/RnaPopulationTuner.h
     src/StableMembraneSystem.cpp
     src/StableMembraneSystem.h
+    src/EntityBudgetSystem.cpp
+    src/EntityBudgetSystem.h
 )
 
 target_link_libraries(Cladia PRIVATE SDL3::SDL3 SDL3_ttf::SDL3_ttf)
