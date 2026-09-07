@@ -36,8 +36,7 @@ void RnaPopulationTuner::update(AbiogenesisSystem& system)
     });
 
     // ATP is intentionally much sparser than before for performance. Only tune
-    // brand-new ATP so particles already travelling through the world or being
-    // consumed by peptides are not disturbed.
+    // brand-new ATP here; sustained cruise motion is applied below to survivors.
     std::erase_if(particles, [](PrimitiveParticle& p)
     {
         if (p.kind != PrimitiveKind::Atp) return false;
@@ -68,8 +67,27 @@ void RnaPopulationTuner::update(AbiogenesisSystem& system)
             p.body.vy = 0.055f + std::abs(std::cos(id * 0.913f)) * 0.065f;
         }
 
-        // Faster travel lets us shorten persistence as another performance guard.
         p.lifetimeSeconds = std::min(p.lifetimeSeconds, 8.0f);
         return false;
     });
+
+    // Water drag used to slow ATP until it effectively stalled halfway across
+    // the map. Keep a deterministic minimum horizontal cruise speed so each
+    // surviving ATP particle can cross the world during its short lifetime.
+    for (PrimitiveParticle& p : particles)
+    {
+        if (p.kind != PrimitiveKind::Atp || p.lifetimeSeconds < 0.0f) continue;
+
+        const float id = static_cast<float>(p.id);
+        const float minimumCruise = 0.145f + std::abs(std::sin(id * 0.413f)) * 0.035f;
+        if (std::abs(p.body.vx) < minimumCruise)
+        {
+            float direction = 0.0f;
+            if (std::abs(p.body.vx) > 0.004f)
+                direction = p.body.vx > 0.0f ? 1.0f : -1.0f;
+            else
+                direction = (p.id & 1u) == 0u ? 1.0f : -1.0f;
+            p.body.vx = direction * minimumCruise;
+        }
+    }
 }
