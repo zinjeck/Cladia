@@ -66,45 +66,59 @@ namespace
         return total / normalizer;
     }
 
-    SDL_Color biomeColor(float elevation, float moisture, float latitude)
+    SDL_Color biomeColor(float elevation, float waterLevel, float moisture, float temperature, float latitude)
     {
-        if (elevation < 0.42f)
+        if (elevation < waterLevel)
         {
-            const float depth = std::clamp((0.42f - elevation) / 0.42f, 0.0f, 1.0f);
+            const float depth = std::clamp((waterLevel - elevation) / std::max(waterLevel, 0.01f), 0.0f, 1.0f);
             return SDL_Color{
-                static_cast<Uint8>(22 + 18 * (1.0f - depth)),
-                static_cast<Uint8>(78 + 54 * (1.0f - depth)),
-                static_cast<Uint8>(128 + 72 * (1.0f - depth)),
+                static_cast<Uint8>(18 + 30 * (1.0f - depth)),
+                static_cast<Uint8>(64 + 75 * (1.0f - depth)),
+                static_cast<Uint8>(118 + 92 * (1.0f - depth)),
                 255};
         }
 
-        if (elevation > 0.80f)
+        const float thermalLatitude = std::clamp(latitude + (0.5f - temperature) * 0.65f, 0.0f, 1.0f);
+
+        if (elevation > waterLevel + 0.29f)
         {
-            const float snow = std::clamp((elevation - 0.80f) / 0.20f + latitude * 0.35f, 0.0f, 1.0f);
-            const Uint8 c = static_cast<Uint8>(135 + 105 * snow);
-            return SDL_Color{c, c, static_cast<Uint8>(c + (c < 245 ? 8 : 0)), 255};
+            const float snow = std::clamp((elevation - waterLevel - 0.29f) / 0.18f + thermalLatitude * 0.45f, 0.0f, 1.0f);
+            const Uint8 c = static_cast<Uint8>(132 + 108 * snow);
+            return SDL_Color{c, c, static_cast<Uint8>(std::min(255, static_cast<int>(c) + 8)), 255};
         }
 
-        if (latitude > 0.72f)
+        if (thermalLatitude > 0.76f)
         {
-            return SDL_Color{105, 135, 118, 255};
+            return SDL_Color{111, 139, 124, 255};
         }
 
-        if (moisture < 0.30f)
+        const float adjustedMoisture = std::clamp(moisture, 0.0f, 1.0f);
+        if (adjustedMoisture < 0.31f)
         {
-            return SDL_Color{194, 166, 92, 255};
+            return temperature > 0.62f
+                ? SDL_Color{201, 172, 94, 255}
+                : SDL_Color{165, 157, 102, 255};
         }
 
-        if (moisture > 0.68f)
+        if (adjustedMoisture > 0.69f)
         {
-            return SDL_Color{44, 116, 72, 255};
+            return temperature > 0.58f
+                ? SDL_Color{39, 117, 68, 255}
+                : SDL_Color{51, 111, 72, 255};
         }
 
-        return SDL_Color{92, 148, 84, 255};
+        return temperature > 0.58f
+            ? SDL_Color{101, 151, 78, 255}
+            : SDL_Color{88, 143, 86, 255};
     }
 }
 
-GeneratedWorld WorldGenerator::generate(SDL_Renderer* renderer, int width, int height, std::uint32_t seed)
+GeneratedWorld WorldGenerator::generate(
+    SDL_Renderer* renderer,
+    int width,
+    int height,
+    std::uint32_t seed,
+    const WorldSettings& settings)
 {
     GeneratedWorld world;
     world.width = width;
@@ -113,6 +127,10 @@ GeneratedWorld WorldGenerator::generate(SDL_Renderer* renderer, int width, int h
 
     std::vector<std::uint32_t> pixels(static_cast<std::size_t>(width) * static_cast<std::size_t>(height));
 
+    const float continentFrequency = 1.65f + settings.continentScale * 2.10f;
+    const float elevationBias = (settings.averageElevation - 0.5f) * 0.34f;
+    const float effectiveWaterLevel = 0.46f + settings.waterLevel * 0.20f;
+
     for (int y = 0; y < height; ++y)
     {
         for (int x = 0; x < width; ++x)
@@ -120,24 +138,34 @@ GeneratedWorld WorldGenerator::generate(SDL_Renderer* renderer, int width, int h
             const float nx = static_cast<float>(x) / static_cast<float>(width);
             const float ny = static_cast<float>(y) / static_cast<float>(height);
 
-            const float warpX = fractalNoise(nx * 3.0f + 17.3f, ny * 3.0f + 9.1f, seed + 33u) - 0.5f;
-            const float warpY = fractalNoise(nx * 3.0f + 41.7f, ny * 3.0f + 27.5f, seed + 71u) - 0.5f;
+            const float warpX = fractalNoise(nx * 2.4f + 17.3f, ny * 2.4f + 9.1f, seed + 33u) - 0.5f;
+            const float warpY = fractalNoise(nx * 2.4f + 41.7f, ny * 2.4f + 27.5f, seed + 71u) - 0.5f;
 
-            const float terrain = fractalNoise(
-                nx * 4.0f + warpX * 0.85f,
-                ny * 4.0f + warpY * 0.85f,
+            const float broadContinents = fractalNoise(
+                nx * continentFrequency + warpX * 0.78f,
+                ny * continentFrequency + warpY * 0.78f,
                 seed);
 
-            const float dx = nx - 0.5f;
-            const float dy = ny - 0.5f;
-            const float radial = std::sqrt(dx * dx + dy * dy) / 0.70710678f;
-            const float continentalFalloff = std::clamp(1.0f - radial * radial * 0.80f, 0.0f, 1.0f);
+            const float detail = fractalNoise(
+                nx * 7.5f + warpX * 0.35f,
+                ny * 7.5f + warpY * 0.35f,
+                seed + 401u);
 
-            const float elevation = std::clamp(terrain * 0.92f + continentalFalloff * 0.22f - 0.10f, 0.0f, 1.0f);
-            const float moisture = fractalNoise(nx * 5.0f + 90.0f, ny * 5.0f + 12.0f, seed + 911u);
+            const float edgeX = std::min(nx, 1.0f - nx);
+            const float edgeY = std::min(ny, 1.0f - ny);
+            const float edgeDistance = std::min(edgeX, edgeY);
+            const float oceanMargin = smoothstep(std::clamp(edgeDistance / 0.12f, 0.0f, 1.0f));
+
+            const float elevation = std::clamp(
+                broadContinents * 0.78f + detail * 0.22f + elevationBias - (1.0f - oceanMargin) * 0.30f,
+                0.0f,
+                1.0f);
+
+            float moisture = fractalNoise(nx * 4.2f + 90.0f, ny * 4.2f + 12.0f, seed + 911u);
+            moisture = std::clamp(moisture + (settings.moisture - 0.5f) * 0.55f, 0.0f, 1.0f);
             const float latitude = std::abs(ny - 0.5f) * 2.0f;
 
-            const SDL_Color color = biomeColor(elevation, moisture, latitude);
+            const SDL_Color color = biomeColor(elevation, effectiveWaterLevel, moisture, settings.temperature, latitude);
             const std::uint32_t packed =
                 (static_cast<std::uint32_t>(color.a) << 24) |
                 (static_cast<std::uint32_t>(color.b) << 16) |
