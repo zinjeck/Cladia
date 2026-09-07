@@ -35,19 +35,18 @@ EnvironmentSample AquaticWorld::environmentAt(float worldX, float oceanY, float 
     const float depth01 = std::clamp(oceanY, 0.0f, 1.0f);
     const float depthMeters = depth01 * definition_.oceanDepthMeters;
 
-    // A simple thermocline-style curve: warmest near the surface, then
-    // increasingly cold with depth. This is intentionally deterministic.
     const float temperatureBlend = std::pow(depth01, 0.58f);
     const float temperature = definition_.surfaceTemperatureC
         + (definition_.bottomTemperatureC - definition_.surfaceTemperatureC) * temperatureBlend;
 
-    // Approximate seawater pressure increase: roughly one atmosphere per 10 m.
     const float pressure = 1.0f + depthMeters / 10.0f;
 
-    // Light attenuates exponentially with depth. This is not a full spectral
-    // ocean optics model yet, but preserves the real-world direction.
+    const float safeSurfaceSolarEnergy = std::max(0.0f, surfaceSolarEnergy);
     const float lightTransmission = std::exp(-depthMeters / 180.0f);
-    const float sunlight = std::clamp(surfaceSolarEnergy * lightTransmission, 0.0f, surfaceSolarEnergy);
+    const float sunlight = std::clamp(
+        safeSurfaceSolarEnergy * lightTransmission,
+        0.0f,
+        safeSurfaceSolarEnergy);
 
     const float horizontalVariation = 0.5f + 0.5f * std::sin(worldX * 9.0f + depth01 * 4.0f);
     const float nutrient = std::clamp(
