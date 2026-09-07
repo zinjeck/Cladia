@@ -17,6 +17,8 @@ struct GeneratedWorld
     SDL_Texture* texture = nullptr;
     int width = 0;
     int height = 0;
+    float worldWidth = 20000.0f;
+    float worldHeight = 11250.0f;
     std::uint32_t seed = 0;
 };
 
