@@ -15,6 +15,8 @@ private:
     void normalizeParticleScales(AbiogenesisSystem& system);
     void pruneDanglingLinks(AbiogenesisSystem& system);
     void tuneEnergyRays(AbiogenesisSystem& system);
+    void limitFreshVentRna(AbiogenesisSystem& system);
+    void suspendAndDisperseRna(AbiogenesisSystem& system, float dt);
     void gateRnaBonding(AbiogenesisSystem& system);
     void shapeLipidAssemblies(AbiogenesisSystem& system, float dt);
     void classifyProtocells(AbiogenesisSystem& system);
