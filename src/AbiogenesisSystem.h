@@ -47,6 +47,9 @@ struct PrimitiveParticle
     float atpCharge = 0.0f;
     std::uint32_t readingTriplet = 0;
     bool excited = false;
+    float peptideEnergyGraceSeconds = 32.0f;
+    bool peptideCatalysisActive = false;
+    bool peptideCatalysisSpent = false;
 };
 
 struct HydrothermalVent
