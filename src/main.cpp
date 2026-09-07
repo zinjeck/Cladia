@@ -7,6 +7,7 @@
 #include "RnaPopulationTuner.h"
 #include "SimulationClock.h"
 #include "StableMembraneSystem.h"
+#include "WorldTopology.h"
 
 #include <algorithm>
 #include <chrono>
@@ -124,6 +125,37 @@ namespace
             58.0f + ((y-top)/h)*static_cast<float>(std::max(height-58,1))};
     }
 
+    SDL_FPoint wrappedWorldToScreen(float x, float y, const Camera& camera, int width, int height)
+    {
+        return worldToScreen(WorldTopology::wrap01(x), y, camera, width, height);
+    }
+
+    void drawWrappedWorldLine(SDL_Renderer* renderer, float ax, float ay, float bx, float by,
+        const Camera& camera, int width, int height, SDL_Color color)
+    {
+        const float aWrapped = WorldTopology::wrap01(ax);
+        const float bWrapped = WorldTopology::wrap01(bx);
+        const float continuousB = aWrapped + WorldTopology::deltaX(aWrapped, bWrapped);
+
+        SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+        const SDL_FPoint a = worldToScreen(aWrapped, ay, camera, width, height);
+        const SDL_FPoint b = worldToScreen(continuousB, by, camera, width, height);
+        SDL_RenderLine(renderer, a.x, a.y, b.x, b.y);
+
+        if (continuousB > 1.0f)
+        {
+            const SDL_FPoint a2 = worldToScreen(aWrapped - 1.0f, ay, camera, width, height);
+            const SDL_FPoint b2 = worldToScreen(bWrapped, by, camera, width, height);
+            SDL_RenderLine(renderer, a2.x, a2.y, b2.x, b2.y);
+        }
+        else if (continuousB < 0.0f)
+        {
+            const SDL_FPoint a2 = worldToScreen(aWrapped + 1.0f, ay, camera, width, height);
+            const SDL_FPoint b2 = worldToScreen(bWrapped, by, camera, width, height);
+            SDL_RenderLine(renderer, a2.x, a2.y, b2.x, b2.y);
+        }
+    }
+
     void updateCamera(Camera& camera, float dt, int width, int height, float mx, float my)
     {
         const bool* keys = SDL_GetKeyboardState(nullptr);
@@ -192,19 +224,6 @@ namespace
         {
             const float half = std::sqrt(std::max(0.0f, radius*radius-static_cast<float>(y*y)));
             SDL_RenderLine(r,cx-half,cy+static_cast<float>(y),cx+half,cy+static_cast<float>(y));
-        }
-    }
-
-    void hollowCircle(SDL_Renderer* r, float cx, float cy, float radius, SDL_Color c)
-    {
-        SDL_SetRenderDrawColor(r,c.r,c.g,c.b,c.a);
-        constexpr int n=36;
-        float lx=cx+radius, ly=cy;
-        for(int i=1;i<=n;++i)
-        {
-            const float a=static_cast<float>(i)/static_cast<float>(n)*2.0f*std::numbers::pi_v<float>;
-            const float x=cx+std::cos(a)*radius, y=cy+std::sin(a)*radius;
-            SDL_RenderLine(r,lx,ly,x,y); lx=x; ly=y;
         }
     }
 
@@ -350,12 +369,7 @@ namespace
             if(p.kind==PrimitiveKind::RnaTriplet && p.backLink!=0)
             {
                 if(const PrimitiveParticle* q=findParticle(system,p.backLink))
-                {
-                    const SDL_FPoint a=worldToScreen(p.body.x,p.body.y,camera,width,height);
-                    const SDL_FPoint b=worldToScreen(q->body.x,q->body.y,camera,width,height);
-                    SDL_SetRenderDrawColor(renderer,176,64,73,220);
-                    SDL_RenderLine(renderer,a.x,a.y,b.x,b.y);
-                }
+                    drawWrappedWorldLine(renderer,p.body.x,p.body.y,q->body.x,q->body.y,camera,width,height,{176,64,73,220});
             }
             if(p.kind==PrimitiveKind::Lipid)
             {
@@ -363,28 +377,15 @@ namespace
                 {
                     if(id<p.id) continue;
                     if(const PrimitiveParticle* q=findParticle(system,id))
-                    {
-                        const SDL_FPoint a=worldToScreen(p.body.x,p.body.y,camera,width,height);
-                        const SDL_FPoint b=worldToScreen(q->body.x,q->body.y,camera,width,height);
-                        SDL_SetRenderDrawColor(renderer,93,185,218,p.stableMembrane?230:150);
-                        SDL_RenderLine(renderer,a.x,a.y,b.x,b.y);
-                    }
+                        drawWrappedWorldLine(renderer,p.body.x,p.body.y,q->body.x,q->body.y,camera,width,height,
+                            p.stableMembrane?SDL_Color{93,185,218,230}:SDL_Color{93,185,218,150});
                 }
             }
         }
 
-        for(const EmergentCellSnapshot& cell:membranes.cells())
-        {
-            const SDL_FPoint c=worldToScreen(cell.centerX,cell.centerY,camera,width,height);
-            const float r=cell.radius*static_cast<float>(width)*camera.zoom;
-            hollowCircle(renderer,c.x,c.y,r,
-                selection.kind==SelectionKind::Cell && selection.id==cell.id
-                    ? SDL_Color{236,246,187,255}:SDL_Color{116,216,207,130});
-        }
-
         for(const HydrothermalVent& vent:system.vents())
         {
-            const SDL_FPoint s=worldToScreen(vent.x,vent.y,camera,width,height);
+            const SDL_FPoint s=wrappedWorldToScreen(vent.x,vent.y,camera,width,height);
             SDL_SetRenderDrawColor(renderer,45,42,38,255);
             SDL_RenderLine(renderer,s.x-18.0f,s.y+14.0f,s.x,s.y-16.0f);
             SDL_RenderLine(renderer,s.x,s.y-16.0f,s.x+18.0f,s.y+14.0f);
@@ -394,21 +395,28 @@ namespace
 
         for(const EnergyRay& ray:system.energyRays())
         {
-            const SDL_FPoint a=worldToScreen(ray.x,ray.y,camera,width,height);
-            const SDL_FPoint b=worldToScreen(ray.x-ray.vx*0.12f,ray.y-ray.vy*0.12f,camera,width,height);
+            const SDL_FPoint a=wrappedWorldToScreen(ray.x,ray.y,camera,width,height);
+            const SDL_FPoint b=wrappedWorldToScreen(ray.x-ray.vx*0.12f,ray.y-ray.vy*0.12f,camera,width,height);
             SDL_SetRenderDrawColor(renderer,ray.solar?247:255,ray.solar?224:137,ray.solar?136:74,150);
             SDL_RenderLine(renderer,a.x,a.y,b.x,b.y);
         }
 
+        const EmergentCellSnapshot* selectedCell = selection.kind==SelectionKind::Cell ? findCell(membranes,selection.id) : nullptr;
+
         for(const PrimitiveParticle& p:system.particles())
         {
-            const SDL_FPoint s=worldToScreen(p.body.x,p.body.y,camera,width,height);
+            const SDL_FPoint s=wrappedWorldToScreen(p.body.x,p.body.y,camera,width,height);
             if(s.y<58.0f || s.y>height) continue;
             const bool selected=selection.kind==SelectionKind::Particle && selection.id==p.id;
+            const bool selectedCellLipid = selectedCell && p.kind==PrimitiveKind::Lipid &&
+                std::find(selectedCell->lipidIds.begin(),selectedCell->lipidIds.end(),p.id)!=selectedCell->lipidIds.end();
+
             if(p.kind==PrimitiveKind::Lipid)
             {
-                filledCircle(renderer,s.x,s.y,selected?4.4f:2.6f,
-                    p.inProtoCell?SDL_Color{151,235,248,255}:p.stableMembrane?SDL_Color{125,222,241,255}:SDL_Color{105,201,232,255});
+                SDL_Color color = p.inProtoCell?SDL_Color{151,235,248,255}:p.stableMembrane?SDL_Color{125,222,241,255}:SDL_Color{105,201,232,255};
+                if(p.cellFormationGlowSeconds>0.0f) color={222,251,231,255};
+                if(selectedCellLipid) color={236,246,187,255};
+                filledCircle(renderer,s.x,s.y,(selected||selectedCellLipid)?4.5f:2.6f,color);
             }
             else if(p.kind==PrimitiveKind::RnaTriplet)
             {
@@ -447,7 +455,7 @@ namespace
             const EmergentCellSnapshot* cell=findCell(membranes,selection.id);
             if(!cell) return;
             drawText(renderer,"PROTO-CELL",panel.x+18,y,24,{228,241,237,255}); y+=42;
-            drawText(renderer,"EMERGENT CLOSED MEMBRANE",panel.x+18,y,14,{159,197,192,255}); y+=28;
+            drawText(renderer,"LIPID MEMBRANE",panel.x+18,y,14,{159,197,192,255}); y+=28;
             drawText(renderer,"RADIUS  "+std::to_string(static_cast<int>(cell->radius*6000.0f))+" game-units",panel.x+18,y,14,{151,190,187,255}); y+=24;
             drawText(renderer,"LIPIDS  "+std::to_string(cell->lipidIds.size()),panel.x+18,y,14,{151,190,187,255}); y+=24;
             drawText(renderer,"RNA TRIPLETS  "+std::to_string(cell->rnaIds.size()),panel.x+18,y,14,{151,190,187,255}); y+=24;
@@ -472,7 +480,7 @@ namespace
         {
             drawText(renderer,"CODE  "+p->triplet,panel.x+18,y,20,p->stopTriplet?SDL_Color{245,116,126,255}:SDL_Color{224,164,169,255}); y+=32;
             drawText(renderer,p->stopTriplet?"TYPE  UAA STOP":"TYPE  CODON",panel.x+18,y,14,{151,190,187,255}); y+=24;
-            drawText(renderer,p->replicationComplete?"REPLICATION  COMPLETE":(p->templatePartnerId||p->replicaTripletId)?"REPLICATION  COPYING":"REPLICATION  AVAILABLE",panel.x+18,y,14,{151,190,187,255}); y+=30;
+            drawText(renderer,p->replicationComplete?"REPLICATION  COMPLETE":(p->templatePartnerId||p->replicaTripletId)?"REPLICATION  COPYING":"REPLICATION  WAITING FOR CELL + CHARGED PEPTIDE",panel.x+18,y,12,{151,190,187,255}); y+=30;
             const auto chain=chainFor(system,p->id);
             drawText(renderer,"RNA LINK  "+std::to_string(chain.size())+" TRIPLETS",panel.x+18,y,16,{210,228,224,255}); y+=28;
             std::string line;
@@ -492,13 +500,13 @@ namespace
         else if(p->kind==PrimitiveKind::Peptide)
         {
             drawText(renderer,"ATP CHARGE  "+std::to_string(static_cast<int>(p->atpCharge)),panel.x+18,y,14,{151,190,187,255}); y+=24;
-            drawText(renderer,p->excited?"STATE  EXCITED":"STATE  RESTING",panel.x+18,y,14,p->excited?SDL_Color{238,199,115,255}:SDL_Color{151,190,187,255}); y+=24;
+            drawText(renderer,p->excited?"STATE  CHARGED":"STATE  RESTING",panel.x+18,y,14,p->excited?SDL_Color{238,199,115,255}:SDL_Color{151,190,187,255}); y+=24;
             drawText(renderer,p->readingTriplet?"RNA READER  ATTACHED":"RNA READER  FREE",panel.x+18,y,14,{151,190,187,255});
         }
         else
         {
             const float remaining=std::max(0.0f,p->lifetimeSeconds-p->ageSeconds);
-            drawText(renderer,"ENERGY CARRIER",panel.x+18,y,14,{229,213,123,255}); y+=24;
+            drawText(renderer,"VENT ENERGY PACKET",panel.x+18,y,14,{229,213,123,255}); y+=24;
             drawText(renderer,"LIFETIME LEFT  "+std::to_string(static_cast<int>(remaining))+" s",panel.x+18,y,14,{151,190,187,255});
         }
     }
@@ -510,7 +518,7 @@ namespace
         float bestD2=12.0f*12.0f;
         for(const PrimitiveParticle& p:system.particles())
         {
-            const SDL_FPoint s=worldToScreen(p.body.x,p.body.y,camera,width,height);
+            const SDL_FPoint s=wrappedWorldToScreen(p.body.x,p.body.y,camera,width,height);
             const float dx=s.x-x, dy=s.y-y;
             const float d2=dx*dx+dy*dy;
             if(d2<bestD2)
@@ -522,7 +530,7 @@ namespace
 
         for(const EmergentCellSnapshot& cell:membranes.cells())
         {
-            const SDL_FPoint c=worldToScreen(cell.centerX,cell.centerY,camera,width,height);
+            const SDL_FPoint c=wrappedWorldToScreen(cell.centerX,cell.centerY,camera,width,height);
             const float r=cell.radius*static_cast<float>(width)*camera.zoom;
             const float dx=c.x-x, dy=c.y-y;
             if(dx*dx+dy*dy<=r*r) return {SelectionKind::Cell,cell.id};
@@ -585,6 +593,7 @@ int main()
             const bool sun=day(clock);
             const SDL_FPoint sunW=celestialWorld(clock,true);
             const float chemistryDt=clock.paused()?0.0f:dt*clock.speed();
+            membranes.prepareReplication(abiogenesis,chemistryDt);
             abiogenesis.update(chemistryDt,clock.elapsedSimulationSeconds(),solarEnergy(clock),sun?sunW.x:0.5f);
             rnaTuner.update(abiogenesis);
             membranes.preLifecycle(abiogenesis);
