@@ -101,3 +101,25 @@ Desktop.ini
 !*.cfg
 !*.txt
 !*.md
+!*.csv
+!*.tsv
+!*.patch
+!*.diff
+
+# =========================
+# Development/helper material
+# Keep handoffs, implementation notes, references, and similar
+# project context visible to Git so collaborators and AI tooling can use it.
+# =========================
+!docs/
+!docs/**
+!notes/
+!notes/**
+!handoffs/
+!handoffs/**
+!reference/
+!reference/**
+!references/
+!references/**
+!dev/
+!dev/**

@@ -1,4 +1,5 @@
 #include <SDL3/SDL.h>
+#include <SDL3_ttf/SDL_ttf.h>
 
 #include "WorldGenerator.h"
 
@@ -8,7 +9,6 @@
 #include <cstdint>
 #include <iostream>
 #include <string_view>
-#include <unordered_map>
 #include <utility>
 
 namespace
@@ -41,68 +41,57 @@ namespace
         float* value = nullptr;
     };
 
-    using Glyph = std::array<std::uint8_t, 7>;
+    TTF_Font* uiFont = nullptr;
 
-    const std::unordered_map<char, Glyph> font = {
-        {'A', {0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001}},
-        {'C', {0b01111, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b01111}},
-        {'D', {0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110}},
-        {'E', {0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111}},
-        {'G', {0b01111, 0b10000, 0b10000, 0b10111, 0b10001, 0b10001, 0b01111}},
-        {'I', {0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b11111}},
-        {'L', {0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111}},
-        {'M', {0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001}},
-        {'N', {0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001}},
-        {'O', {0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110}},
-        {'P', {0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000}},
-        {'R', {0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001}},
-        {'S', {0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110}},
-        {'T', {0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100}},
-        {'U', {0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110}},
-        {'V', {0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100}},
-        {'W', {0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b10101, 0b01010}},
-        {'Y', {0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100}},
-        {' ', {0, 0, 0, 0, 0, 0, 0}}
-    };
-
-    void drawText(SDL_Renderer* renderer, std::string_view text, float x, float y, float scale, SDL_Color color)
+    void drawText(SDL_Renderer* renderer, std::string_view text, float x, float y, float pointSize, SDL_Color color)
     {
-        SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
-        float cursorX = x;
-
-        for (char c : text)
+        if (uiFont == nullptr || text.empty())
         {
-            const auto it = font.find(c);
-            if (it == font.end())
-            {
-                cursorX += 6.0f * scale;
-                continue;
-            }
-
-            const Glyph& glyph = it->second;
-            for (int row = 0; row < 7; ++row)
-            {
-                for (int column = 0; column < 5; ++column)
-                {
-                    const std::uint8_t mask = static_cast<std::uint8_t>(1u << (4 - column));
-                    if ((glyph[static_cast<std::size_t>(row)] & mask) != 0)
-                    {
-                        SDL_FRect pixel{
-                            cursorX + static_cast<float>(column) * scale,
-                            y + static_cast<float>(row) * scale,
-                            scale,
-                            scale};
-                        SDL_RenderFillRect(renderer, &pixel);
-                    }
-                }
-            }
-            cursorX += 6.0f * scale;
+            return;
         }
+
+        if (!TTF_SetFontSize(uiFont, pointSize))
+        {
+            return;
+        }
+
+        SDL_Surface* surface = TTF_RenderText_Blended(uiFont, text.data(), text.size(), color);
+        if (surface == nullptr)
+        {
+            return;
+        }
+
+        SDL_Texture* texture = SDL_CreateTextureFromSurface(renderer, surface);
+        if (texture != nullptr)
+        {
+            SDL_FRect destination{x, y, static_cast<float>(surface->w), static_cast<float>(surface->h)};
+            SDL_RenderTexture(renderer, texture, nullptr, &destination);
+            SDL_DestroyTexture(texture);
+        }
+
+        SDL_DestroySurface(surface);
     }
 
-    float textWidth(std::string_view text, float scale)
+    float textWidth(std::string_view text, float pointSize)
     {
-        return text.empty() ? 0.0f : static_cast<float>(text.size() * 6 - 1) * scale;
+        if (uiFont == nullptr || text.empty())
+        {
+            return 0.0f;
+        }
+
+        if (!TTF_SetFontSize(uiFont, pointSize))
+        {
+            return 0.0f;
+        }
+
+        int width = 0;
+        int height = 0;
+        if (!TTF_GetStringSize(uiFont, text.data(), text.size(), &width, &height))
+        {
+            return 0.0f;
+        }
+
+        return static_cast<float>(width);
     }
 
     bool pointInside(const SDL_FRect& rect, float x, float y)
@@ -160,9 +149,9 @@ namespace
         SDL_SetRenderDrawColor(renderer, 12, 20, 25, 255);
         SDL_RenderClear(renderer);
 
-        const float titleScale = width < 1000 ? 5.0f : 7.0f;
-        const float titleX = (static_cast<float>(width) - textWidth("CLADIA", titleScale)) * 0.5f;
-        drawText(renderer, "CLADIA", titleX, 34.0f, titleScale, SDL_Color{226, 237, 219, 255});
+        const float titleSize = width < 1000 ? 48.0f : 62.0f;
+        const float titleX = (static_cast<float>(width) - textWidth("CLADIA", titleSize)) * 0.5f;
+        drawText(renderer, "CLADIA", titleX, 28.0f, titleSize, SDL_Color{226, 237, 219, 255});
 
         const float panelMargin = 46.0f;
         const float panelTop = 120.0f;
@@ -178,7 +167,7 @@ namespace
         const float leftWidth = panel.w * 0.54f;
         SDL_FRect previewFrame{panel.x + 26.0f, panel.y + 56.0f, leftWidth - 38.0f, panel.h - 112.0f};
 
-        drawText(renderer, "WORLD PREVIEW", previewFrame.x, panel.y + 24.0f, 2.4f, SDL_Color{190, 208, 186, 255});
+        drawText(renderer, "WORLD PREVIEW", previewFrame.x, panel.y + 20.0f, 22.0f, SDL_Color{190, 208, 186, 255});
         SDL_SetRenderDrawColor(renderer, 6, 12, 16, 255);
         SDL_RenderFillRect(renderer, &previewFrame);
 
@@ -208,29 +197,29 @@ namespace
         const float sliderWidth = std::max(180.0f, rightWidth);
         float y = panel.y + 76.0f;
 
-        drawText(renderer, "WORLD SETTINGS", rightX, panel.y + 24.0f, 2.4f, SDL_Color{190, 208, 186, 255});
+        drawText(renderer, "WORLD SETTINGS", rightX, panel.y + 20.0f, 22.0f, SDL_Color{190, 208, 186, 255});
 
-        drawText(renderer, "AVERAGE ELEVATION", rightX, y, 1.7f, SDL_Color{218, 226, 211, 255});
+        drawText(renderer, "AVERAGE ELEVATION", rightX, y, 17.0f, SDL_Color{218, 226, 211, 255});
         y += 28.0f;
         drawSlider(renderer, elevationSlider, rightX, y, sliderWidth, settings.averageElevation);
         y += 58.0f;
 
-        drawText(renderer, "TEMPERATURE", rightX, y, 1.7f, SDL_Color{218, 226, 211, 255});
+        drawText(renderer, "TEMPERATURE", rightX, y, 17.0f, SDL_Color{218, 226, 211, 255});
         y += 28.0f;
         drawSlider(renderer, temperatureSlider, rightX, y, sliderWidth, settings.temperature);
         y += 58.0f;
 
-        drawText(renderer, "WATER LEVEL", rightX, y, 1.7f, SDL_Color{218, 226, 211, 255});
+        drawText(renderer, "WATER LEVEL", rightX, y, 17.0f, SDL_Color{218, 226, 211, 255});
         y += 28.0f;
         drawSlider(renderer, waterSlider, rightX, y, sliderWidth, settings.waterLevel);
         y += 58.0f;
 
-        drawText(renderer, "MOISTURE", rightX, y, 1.7f, SDL_Color{218, 226, 211, 255});
+        drawText(renderer, "MOISTURE", rightX, y, 17.0f, SDL_Color{218, 226, 211, 255});
         y += 28.0f;
         drawSlider(renderer, moistureSlider, rightX, y, sliderWidth, settings.moisture);
         y += 58.0f;
 
-        drawText(renderer, "CONTINENT SCALE", rightX, y, 1.7f, SDL_Color{218, 226, 211, 255});
+        drawText(renderer, "CONTINENT SCALE", rightX, y, 17.0f, SDL_Color{218, 226, 211, 255});
         y += 28.0f;
         drawSlider(renderer, continentSlider, rightX, y, sliderWidth, settings.continentScale);
 
@@ -239,12 +228,12 @@ namespace
 
         SDL_SetRenderDrawColor(renderer, rerollButton.hovered ? 72 : 49, rerollButton.hovered ? 98 : 72, rerollButton.hovered ? 92 : 77, 255);
         SDL_RenderFillRect(renderer, &rerollButton.rect);
-        drawText(renderer, "NEW WORLD", rerollButton.rect.x + 14.0f, rerollButton.rect.y + 17.0f, 1.8f, SDL_Color{231, 238, 226, 255});
+        drawText(renderer, "NEW WORLD", rerollButton.rect.x + 14.0f, rerollButton.rect.y + 14.0f, 18.0f, SDL_Color{231, 238, 226, 255});
 
         SDL_SetRenderDrawColor(renderer, playButton.hovered ? 115 : 79, playButton.hovered ? 158 : 119, playButton.hovered ? 104 : 76, 255);
         SDL_RenderFillRect(renderer, &playButton.rect);
-        const float playScale = 2.5f;
-        drawText(renderer, "PLAY", playButton.rect.x + (playButton.rect.w - textWidth("PLAY", playScale)) * 0.5f, playButton.rect.y + 17.0f, playScale, SDL_Color{244, 248, 238, 255});
+        const float playSize = 24.0f;
+        drawText(renderer, "PLAY", playButton.rect.x + (playButton.rect.w - textWidth("PLAY", playSize)) * 0.5f, playButton.rect.y + 11.0f, playSize, SDL_Color{244, 248, 238, 255});
     }
 
     void renderWorld(SDL_Renderer* renderer, const GeneratedWorld& world, int width, int height)
@@ -277,7 +266,7 @@ namespace
         SDL_SetRenderDrawColor(renderer, 7, 11, 14, 180);
         SDL_FRect header{0.0f, 0.0f, static_cast<float>(width), 52.0f};
         SDL_RenderFillRect(renderer, &header);
-        drawText(renderer, "WORLD", 20.0f, 16.0f, 3.0f, SDL_Color{228, 236, 223, 255});
+        drawText(renderer, "WORLD", 20.0f, 11.0f, 26.0f, SDL_Color{228, 236, 223, 255});
     }
 }
 
@@ -289,10 +278,18 @@ int main()
         return 1;
     }
 
+    if (!TTF_Init())
+    {
+        std::cerr << "TTF_Init failed: " << SDL_GetError() << '\n';
+        SDL_Quit();
+        return 1;
+    }
+
     SDL_Window* window = SDL_CreateWindow("Cladia", 1280, 720, SDL_WINDOW_RESIZABLE);
     if (window == nullptr)
     {
         std::cerr << "SDL_CreateWindow failed: " << SDL_GetError() << '\n';
+        TTF_Quit();
         SDL_Quit();
         return 1;
     }
@@ -302,6 +299,18 @@ int main()
     {
         std::cerr << "SDL_CreateRenderer failed: " << SDL_GetError() << '\n';
         SDL_DestroyWindow(window);
+        TTF_Quit();
+        SDL_Quit();
+        return 1;
+    }
+
+    uiFont = TTF_OpenFont("Arimo-Regular.ttf", 24.0f);
+    if (uiFont == nullptr)
+    {
+        std::cerr << "TTF_OpenFont failed for Arimo-Regular.ttf: " << SDL_GetError() << '\n';
+        SDL_DestroyRenderer(renderer);
+        SDL_DestroyWindow(window);
+        TTF_Quit();
         SDL_Quit();
         return 1;
     }
@@ -452,8 +461,11 @@ int main()
 
     WorldGenerator::destroy(preview);
     WorldGenerator::destroy(world);
+    TTF_CloseFont(uiFont);
+    uiFont = nullptr;
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
+    TTF_Quit();
     SDL_Quit();
     return 0;
 }
