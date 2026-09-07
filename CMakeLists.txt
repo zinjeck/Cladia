@@ -27,8 +27,6 @@ FetchContent_MakeAvailable(SDL3_ttf)
 
 add_executable(Cladia
     src/main.cpp
-    src/WorldGenerator.cpp
-    src/WorldGenerator.h
     src/CellSystem.cpp
     src/CellSystem.h
 )
